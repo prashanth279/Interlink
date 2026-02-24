@@ -1,18 +1,30 @@
-# 🚀 Interlink Farmer Ultimate (by PRASHANTH)
+# 🚀 INTERLINK FARMER (Prashanth Edition)
+Automated multi-account farming script optimized for **Nothing Phone (2a)**.
 
-A high-performance, multi-account automated farming script for Interlink Labs, optimized for **Nothing Phone (2a)** architecture. Built for efficiency, security, and detailed tracking.
-
-## ✨ Features
-- **Multi-Account Support**: Manage 3+ accounts simultaneously with independent state tracking.
-- **Smart Staggering**: Anti-bot logic with random offsets (10-50 mins) to mimic human behavior.
-- **Daily Gain Tracking**: Account-wise "Today's Earned ITLG" display that persists across restarts.
-- **Integrated Login**: Automated OTP handling and secure token management.
-- **GMT Synchronization**: Live GMT offset display for precise window alignment.
-- **Proxy Rotation**: Dedicated proxy support per account to prevent IP flagging.
+## 💎 Features
+- **Multi-Account Support**: Manage 3+ accounts with independent tracking.
+- **Smart Staggering**: Anti-bot logic with random offsets (10-50 mins).
+- **Daily Gain Tracking**: Account-wise "Today's Earned ITLG" display.
+- **Integrated Login**: Secure OTP and token management.
 
 ## 🛠 Installation
-
-1. **Clone the Repository**:
+1. **Clone & Setup**:
    ```bash
-   git clone [https://github.com/prashanth279/interlink-farmer.git](https://github.com/prashanth279/interlink-farmer.git)
+   git clone https://github.com/prashanth279/interlink-farmer.git
    cd interlink-farmer
+   npm install axios moment https-proxy-agent socks-proxy-agent
+   ```
+
+2. **Configure**:
+   Create `accounts.json` with your deviceId and name.
+
+## 🚀 Execution
+```bash
+node index.js
+```
+
+## 🛡 Security
+- Your private data (`accounts.json`, `logs.json`) is protected by `.gitignore`.
+
+---
+**Maintained by [PRASHANTH](https://github.com/prashanth279)**
