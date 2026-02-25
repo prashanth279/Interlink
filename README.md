@@ -1,1 +1,64 @@
-echo "IyA8cmU+IEludGVybGluayBQcmVjaXNpb24gRmFybWVyIChTdGVhbHRoIEVkaXRpb24pCgpBbiBhdXRvbWF0ZWQgZmFybWluZyBzb2x1dGlvbiBmb3IgSW50ZXJsaW5rIEdvbGQsIGRlc2lnbmVkIHdpdGggaGlnaCBzdGVhbHRoLCBsb3cgc2VydmVyIGZvb3RwcmludCwgYW5kIG11bHRpLWFjY291bnQgc3VwcG9ydC4KCiMjIOKclSBLZXkgRmVhdHVyZXMKCiogKipPbmUtQ29tbWFuZCBMb2dpbjoqKiBVc2UgYGxvZ2luLmpzYCB0byBhdXRoZW50aWNhdGUsIHZlcmlmeSBPVFAsIGFuZCBhdXRvLWNvbmZpZ3VyZSBhY2NvdW50cy4KKiAqKlN0ZWFsdGggSGFuZHNoYWtlOioqIE9ubHkgcGluZ3MgdGhlIHNlcnZlciBkdXJpbmcgY2xhaW0gd2luZG93cyAobm8gY29uc3RhbnQgc3BhbW1pbmcpLgoqICoqUHJlY2lzaW9uIFRpbWluZzoqKiBSYW5kb21pemVzIGNsYWltIHRpbWVzIGZvciBlYWNoIGFjY291bnQgdG8gbWltaWMgaHVtYW4gYmVoYXZpb3IuCiogKipNdWx0aS1BY2NvdW50IFN1cHBvcnQ6KiogUnVucyBtdWx0aXBsZSBhY2NvdW50cyB3aXRoIHVuaXF1ZSBEZXZpY2UgSURzIGFuZCBQcm94eSByb3RhdGlvbi4KKiAqKlZpc3VhbCBEYXNoYm9hcmQ6KiogUmVhbC10aW1lIHRlcm1pbmFsIFVJIHNob3dpbmcgc3RhdHVzIGZvciBhbGwgNiBkYWlseSBtaW5pbmcgd2luZG93cy4KKiAqKlBlcnNpc3RlbnQgTG9nZ2luZzoqKiBUcmFja3MgZGFpbHkgZ2FpbnMgYW5kIG1pc3NlZCB3aW5kb3dzIGluIGBsb2dzLmpzb24uCgotLS0KCiMjIO🚀IEluc3RhbGxhdGlvbiMKCiMjIyAxLiBSZXF1aXJlbWVudHMKKiBOb2RlLmpzICh2MTYgb3IgaGlnaGVyKQoqIFRlcm11eCAoQW5kcm9pZCkgb3IgYW55IExpbnV4IFZQUwoKIyMjIDIuIFNldHVwCmBgYGJhc2gKIyBDbG9uZSB0aGUgcmVwb3NpdG9yeQpnaXQgY2xvbmUgaHR0cHM6Ly9naXRodWIuY29tL3ByYXNoYW50aDI3OS9pbnRlcmxpbmstZmFybWVyLmdpdApjZCBpbnRlcmxpbmstZmFybWVyCgojIEluc3RhbGwgZGVwZW5kZW5jaWVzCm5wbSBpbnN0YWxsIGF4aW9zIG1vbWVudCBodHRwcy1wcm94eS1hZ2VudCBzb2Nrcy1wcm94eS1hZ2VudApgYGAKCi0tLQoKIyMg8J+SuSBBdXRvbWF0ZWQgTG9naW4gUHJvY2VzcwoKWW91IGRvIG5vdCBuZWVkIHRvIGNyZWF0ZSBgYWNjb3VudHMuanNvbmAgbWFudWFsbHkuIFRoZSBsb2dpbiBoZWxwZXIgaGFuZGxlcyBldmVyeXRoaW5nLgoKIyMjIFN0ZXAgMTogUHJlcGFyZSBQcm94aWVzIChPcHRpb25hbCkKSWYgeW91IGhhdmUgcHJveGllcywgYWRkIHRoZW0gdG8gYSBmaWxlIG5hbWVkIGBwcm94aWVzLnR4dGAgKG9uZSBwZXIgbGluZSkuIElmIHRoZSBmaWxlIGlzIGVtcHR5IG9yIG1pc3NpbmcsIHRoZSBzY3JpcHQgd2lsbCB1c2UgeW91ciBsb2NhbCBJUC4KCiMjIyBTdGVwIDI6IFJ1biB0aGUgTG9naW4gSGVscGVyCmBgYGJhc2gKbm9kZSBsb2dpbi5qcwpgYGAKCiMjIyBTdGVwIDM6IEF1dGhlbnRpY2F0ZQoxLiAqKkVudGVyIENyZWRlbnRpYWxzOioqIFByb3ZpZGUgeW91ciBMb2dpbiBJRCAoVXNlcm5hbWUvRW1haWwpLCBQYXNzY29kZSwgYW5kIEVtYWlsLgoyLiAqKkRldmljZSBJZGVudGl0eToqKiBUaGUgc2NyaXB0IGF1dG9tYXRpY2FsbHkgZ2VuZXJhdGVzIGEgKipVbmlxdWUgQW5kcm9pZCBEZXZpY2UgSUQqKiBmb3IgdGhpcyBzZXNzaW9uLgozLiAqKk9UUCBWZXJpZmljYXRpb246KiogQ2hlY2sgeW91ciBlbWFpbCBmb3IgdGhlIE9UUCwgZW50ZXIgaXQgaW50byB0aGUgdGVybWluYWwsIGFuZCBoaXQgRW50ZXIuCjQuICoqQXV0by1TYXZlOioqIFRoZSBzY3JpcHQgdmVyaWZpZXMgdGhlIHRva2VuIGFuZCBhdXRvbWF0aWNhbGx5IGNyZWF0ZXMvdXBkYXRlcyBgYWNjb3VudHMuanNvbmAgd2l0aCB0aGUgY29ycmVjdCBmb3JtYXQuCgotLS0KCiMjIPCfjr8gVXNhZ2UKCk9uY2UgeW91ciBhY2NvdW50cyBhcmUgYWRkZWQgdmlhIGBsb2dpbi5qc2AsIHN0YXJ0IHRoZSBwcmVjaXNpb24gZmFybWVyOgpgYGJiYXNoCm5vZGUgaW5kZXguanMKYGBgCgotLS0KCiMjIOKaoiBTZWN1cml0eSBOb3RpY2UKWW91ciBgYWNjb3VudHMuanNvbmAsIGBwcm94aWVzLnR4dGAsIGFuZCBgbG9ncy5qc29uYCBhcmUgaW5jbHVkZWQgaW4gdGhlIGAuZ2l0aWdub3JlYC4gKipOZXZlcioqIHJlbW92ZSB0aGVtIGZyb20gdGhlIGlnbm9yZSBsaXN0LCBvciB5b3UgcmlzayBsZWFraW5nIHlvdXIgbG9naW4gdG9rZW5zIHRvIHRoZSBwdWJsaWMu" | base64 -d > README.md && echo "✅ README.md saved successfully!"
+# <re> Interlink Precision Farmer (Stealth Edition)
+
+An automated farming solution for Interlink Gold, designed with high stealth, low server footprint, and multi-account support.
+
+## ✕ Key Features
+
+* **One-Command Login:** Use `login.js` to authenticate, verify OTP, and auto-configure accounts.
+* **Stealth Handshake:** Only pings the server during claim windows (no constant spamming).
+* **Precision Timing:** Randomizes claim times for each account to mimic human behavior.
+* **Multi-Account Support:** Runs multiple accounts with unique Device IDs and Proxy rotation.
+* **Visual Dashboard:** Real-time terminal UI showing status for all 6 daily mining windows.
+* **Persistent Logging:** Tracks daily gains and missed windows in `logs.json.
+
+---
+
+## ✄ Installation
+
+### 1. Requirements
+* Node.js (v16 or higher)
+* Termux (Android) or any Linux VPS
+
+### 2. Setup
+```bash
+# Clone the repository
+git clone https://github.com/prashanth279/interlink-farmer.git
+cd interlink-farmer
+
+# Install dependencies
+npm install axios moment https-proxy-agent socks-proxy-agent
+```
+
+---
+
+## 💹 Automated Login Process
+
+You do not need to create `accounts.json` manually. The login helper handles everything.
+
+### Step 1: Prepare Proxies (Optional)
+If you have proxies, add them to a file named `proxies.txt` (one per line). If the file is empty or missing, the script will use your local IP.
+
+### Step 2: Run the Login Helper
+```bash
+node login.js
+```
+
+### Step 3: Authenticate
+1. **Enter Credentials:** Provide your Login ID (Username/Email), Passcode, and Email.
+2. **Device Identity:** The script automatically generates a **Unique Android Device ID** for this session.
+3. **OTP Verification:** Check your email for the OTP, enter it into the terminal, and hit Enter.
+4. **Auto-Save:** The script verifies the token and automatically creates/updates `accounts.json` with the correct format.
+
+---
+
+## 🎿 Usage
+
+Once your accounts are added via `login.js`, start the precision farmer:
+``bbash
+node index.js
+```
+
+---
+
+## ⚢ Security Notice
+Your `accounts.json`, `proxies.txt`, and `logs.json` are included in the `.gitignore`. **Never** remove them from the ignore list, or you risk leaking your login tokens to the public.
