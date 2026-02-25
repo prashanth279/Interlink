@@ -3,3 +3,5 @@ proxies.txt
 logs.json
 node_modules/
 package-lock.json
+accounts.json.example
+proxies.example
