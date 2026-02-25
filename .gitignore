@@ -1,7 +1,5 @@
 accounts.json
-logs.json
 proxies.txt
+logs.json
 node_modules/
-accounts.json
-proxies.txt
-logs.json
+package-lock.json
