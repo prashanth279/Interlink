@@ -1,9 +1,5 @@
 accounts.json
-proxies.txt
+accounts.json.backup
 logs.json
 node_modules/
 package-lock.json
-accounts.json.example
-proxies.example
-proxies.txt.example
-proxies.txt
