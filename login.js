@@ -5,116 +5,128 @@ const crypto = require('crypto');
 const readline = require('readline');
 const https = require('https');
 
-const REQUIRED_PACKAGES = ['axios', 'moment', 'moment-timezone'];
-function installDependencies() {
-    for (const pkg of REQUIRED_PACKAGES) {
-        try { require.resolve(pkg); } catch (e) {
-            execSync(`npm install ${pkg}`, { stdio: 'inherit' });
-        }
-    }
+// --- THEME ---
+const c = { cy: '\x1b[36m', m: '\x1b[35m', y: '\x1b[33m', g: '\x1b[32m', r: '\x1b[31m', w: '\x1b[37m', gr: '\x1b[90m', b: '\x1b[1m', rst: '\x1b[0m' };
+
+// --- AUTO-INSTALL & FILE CHECK ---
+function setupEnvironment() {
+    const pkgs = ['axios', 'moment', 'https-proxy-agent', 'socks-proxy-agent'];
+    pkgs.forEach(p => { try { require.resolve(p); } catch (e) { execSync(`npm install ${p}`, { stdio: 'inherit' }); } });
+
+    // Create files if they don't exist
+    if (!fs.existsSync(path.join(__dirname, 'accounts.json'))) fs.writeFileSync(path.join(__dirname, 'accounts.json'), '[]');
+    if (!fs.existsSync(path.join(__dirname, 'logs.json'))) fs.writeFileSync(path.join(__dirname, 'logs.json'), '{}');
 }
-installDependencies();
+setupEnvironment();
 
 const axios = require('axios');
+const moment = require('moment');
+const { HttpsProxyAgent } = require('https-proxy-agent');
+const { SocksProxyAgent } = require('socks-proxy-agent');
+
 const API_BASE_URL = 'https://prod.interlinklabs.ai/api/v1';
 const MINI_API_URL = 'https://interlink-mini-app.interlinklabs.ai/api';
 const ACCOUNTS_JSON = path.join(__dirname, 'accounts.json');
 
-const c = { g: '\x1b[32m', y: '\x1b[33m', r: '\x1b[31m', cy: '\x1b[36m', w: '\x1b[37m', rs: '\x1b[0m', gr: '\x1b[90m' };
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-const prompt = (q) => new Promise((res) => rl.question(`${c.w}${q}${c.rs}`, (a) => res(a.trim())));
+const prompt = (q) => new Promise((res) => rl.question(`${c.cy}⸽ ${c.w}${q}${c.rst}`, (a) => res(a.trim())));
 
-const MODELS = [
-    { brand: 'XiaoMi', model: 'Redmi Note 8 Pro' },
-    { brand: 'Samsung', model: 'Galaxy S21 Ultra' },
-    { brand: 'Google', model: 'Pixel 6' },
-    { brand: 'OnePlus', model: 'OnePlus 9' }
-];
+const MODELS = [{ brand: 'XiaoMi', model: 'Redmi Note 8 Pro' }, { brand: 'Samsung', model: 'Galaxy S21 Ultra' }, { brand: 'Google', model: 'Pixel 6' }];
 
-function createClient(acc) {
-    const instance = axios.create({
-        baseURL: API_BASE_URL,
-        headers: {
-            'User-Agent': 'okhttp/4.12.0',
-            'x-unique-id': acc.deviceId,
-            'x-device-id': acc.deviceId,
-            'x-model': acc.model || 'Redmi Note 8 Pro',
-            'x-brand': acc.brand || 'XiaoMi',
-            'version': '1.1.8'
-        },
-        httpsAgent: new https.Agent({ rejectUnauthorized: false })
-    });
-    if (acc.token) instance.defaults.headers['Authorization'] = `Bearer ${acc.token}`;
-    return instance;
+function getAgent(proxy) {
+    if (!proxy) return new https.Agent({ rejectUnauthorized: false });
+    return proxy.startsWith('socks') ? new SocksProxyAgent(proxy) : new HttpsProxyAgent(proxy);
 }
 
 async function performLogin(targetAcc = null) {
-    console.log(`\n${c.y}--- Starting Login Management ---${c.rs}`);
-    const loginId = await prompt('Enter Login ID: ');
-    const passcode = await prompt('Enter Passcode: ');
-    const email = await prompt('Enter Email: ');
-    
+    console.log(`\n${c.m}◢◤ ${c.cy}AUTH_PROTOCOL_INITIATED ${c.m}◥◣${c.rst}`);
+
+    const loginId = await prompt('LOGIN ID: ');
+    const passcode = await prompt('PASSCODE: ');
+    const email = await prompt('EMAIL: ');
+    const proxy = await prompt('PROXY (optional): ');
+
     const deviceId = targetAcc ? targetAcc.deviceId : crypto.randomBytes(8).toString('hex');
     const identity = targetAcc ? { brand: targetAcc.brand, model: targetAcc.model } : MODELS[Math.floor(Math.random() * MODELS.length)];
-    const client = createClient({ deviceId, ...identity });
+    const agent = getAgent(proxy);
+
+    const client = axios.create({
+        baseURL: API_BASE_URL,
+        headers: { 'User-Agent': 'okhttp/4.12.0', 'x-unique-id': deviceId, 'version': '1.1.8' },
+        httpsAgent: agent
+    });
 
     try {
         await client.get(`/auth/loginId-exist-check/${loginId}`, { params: { deviceId } });
         await client.post('/auth/check-passcode', { loginId, passcode, deviceId });
         await client.post('/auth/send-otp-email-verify-login', { loginId, passcode, email, deviceId });
 
-        console.log(`${c.g}[✓] OTP Sent! Check email...${c.rs}`);
-        const otp = await prompt('Enter OTP: ');
+        console.log(`${c.g}⫸ OTP_SENT_TO_EMAIL${c.rst}`);
+        const otp = await prompt('ENTER OTP: ');
         const verifyRes = await client.post('/auth/check-otp-email-verify-login', { loginId, otp, deviceId });
-        
+
         const token = verifyRes.data?.data?.jwtToken;
         const realName = verifyRes.data?.data?.user?.username || loginId;
 
         if (token) {
-            console.log(`${c.y}[⟳] Syncing Mini-App Token...${c.rs}`);
-            const miniRes = await axios.post(`${MINI_API_URL}/tracking/verify`, { loginId, appId: 'id__mk39oef6we80fs7j2rif' }, {
-                headers: { 'api-public': 'e97ae0aa6520499d9edf20bd5a1e13c7' }
-            });
-            const miniToken = miniRes.data?.data?.token || null;
+            console.log(`${c.y}⫸ SYNCING_MINI_APP_TOKEN...${c.rst}`);
+            // FIX: Added Authorization header to the Mini-App request
+            const miniRes = await axios.post(`${MINI_API_URL}/tracking/verify`, 
+                { loginId, appId: 'id__mk39oef6we80fs7j2rif' }, 
+                { 
+                    headers: { 
+                        'api-public': 'e97ae0aa6520499d9edf20bd5a1e13c7',
+                        'Authorization': `Bearer ${token}` 
+                    },
+                    httpsAgent: agent
+                }
+            );
             
-            saveAccount({ name: realName, token, miniToken, deviceId, ...identity });
-            console.log(`${c.g}[✅] Account "${realName}" Updated & Saved!${c.rs}`);
+            const miniToken = miniRes.data?.data?.token || null;
+
+            saveAccount({ name: realName, token, miniToken, deviceId, proxy, ...identity });
+            console.log(`${c.g}✅ ACCOUNT_SAVED: ${realName}${c.rst}`);
+            await new Promise(r => setTimeout(r, 2000));
         }
     } catch (e) {
-        console.log(`${c.r}[✗] Failed: ${e.response?.data?.message || e.message}${c.rs}`);
+        console.log(`${c.r}❌ AUTH_FAILED: ${e.response?.data?.message || e.message}${c.rst}`);
+        await prompt('Press Enter to return...');
     }
 }
 
 function saveAccount(acc) {
-    let accounts = fs.existsSync(ACCOUNTS_JSON) ? JSON.parse(fs.readFileSync(ACCOUNTS_JSON, 'utf8')) : [];
+    let accounts = JSON.parse(fs.readFileSync(ACCOUNTS_JSON, 'utf8'));
     const idx = accounts.findIndex(a => a.deviceId === acc.deviceId);
-    if (idx !== -1) accounts[idx] = acc; else accounts.push(acc);
+    const formattedAcc = { ...acc, lastUpdate: moment().format('YYYY-MM-DD HH:mm:ss') };
+    if (idx !== -1) accounts[idx] = formattedAcc; else accounts.push(formattedAcc);
     fs.writeFileSync(ACCOUNTS_JSON, JSON.stringify(accounts, null, 2));
 }
 
 async function main() {
     while (true) {
         console.clear();
-        console.log(`${c.cy}=== INTERLINK ACCOUNT MANAGER ===${c.rs}`);
-        if (fs.existsSync(ACCOUNTS_JSON)) {
-            const accs = JSON.parse(fs.readFileSync(ACCOUNTS_JSON, 'utf8'));
-            accs.forEach((a, i) => console.log(`${i+1}. ${a.name.padEnd(15)} | ${a.model} | SpinToken: ${a.miniToken ? 'YES' : 'NO'}`));
-        } else { console.log(c.gr + "No accounts yet." + c.rs); }
+        console.log(`${c.m}══ ${c.b}${c.cy}INTERLINK_MANAGER_v3.4${c.rst} ${c.m}══${c.rst}\n`);
         
-        console.log(`\n1. Add/Fix Account | 2. Remove | 3. Exit`);
-        const choice = await prompt('Choice: ');
+        const accounts = JSON.parse(fs.readFileSync(ACCOUNTS_JSON, 'utf8'));
+        if (accounts.length > 0) {
+            accounts.forEach((a, i) => {
+                const s = a.miniToken ? `${c.g}YES${c.rst}` : `${c.r}NO${c.rst}`;
+                console.log(`${c.cy}⫸ ${c.w}${i+1}. ${a.name.padEnd(12)}${c.rst} | SPN: ${s}`);
+            });
+        } else { console.log(`${c.gr}⸽ NO_ACCOUNTS_FOUND${c.rst}`); }
+
+        console.log(`\n${c.cy}⫹── ${c.b}${c.w}1. ADD/FIX | 2. REMOVE | 3. EXIT${c.rst} ──⫺`);
+        const choice = await prompt('ACTION: ');
         if (choice === '1') {
-            const id = await prompt('Enter ID to fix (or leave blank for new): ');
-            const accounts = fs.existsSync(ACCOUNTS_JSON) ? JSON.parse(fs.readFileSync(ACCOUNTS_JSON, 'utf8')) : [];
+            const id = await prompt('ID (BLANK FOR NEW): ');
             await performLogin(accounts[id-1] || null);
-        }
-        if (choice === '2') {
-            const id = await prompt('Remove ID: ');
-            let accounts = JSON.parse(fs.readFileSync(ACCOUNTS_JSON, 'utf8'));
-            accounts.splice(id-1, 1);
-            fs.writeFileSync(ACCOUNTS_JSON, JSON.stringify(accounts, null, 2));
-        }
-        if (choice === '3') process.exit(0);
+        } else if (choice === '2') {
+            const id = await prompt('REMOVE ID: ');
+            if (accounts[id-1]) {
+                accounts.splice(id-1, 1);
+                fs.writeFileSync(ACCOUNTS_JSON, JSON.stringify(accounts, null, 2));
+            }
+        } else if (choice === '3') process.exit(0);
     }
 }
 main();
