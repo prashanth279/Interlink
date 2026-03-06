@@ -157,7 +157,7 @@ async function main() {
 
     while (true) {
         console.clear();
-        console.log(`${c.m}══ ${c.b}${c.cy}INTERLINK FARMER: STEALTH EDITION${c.rst} ${c.m}══${c.rst}`);
+        console.log(`${c.m}══ ${c.b}${c.cy}INTERLINK FARMER: STEALTH EDITION by PRASHANTH${c.rst} ${c.m}══${c.rst}`);
         console.log(`${c.gr}UTC: ${moment.utc().format('HH:mm:ss')} | SPINS: ${spinEnabled ? c.g + 'ON' : c.r + 'OFF'}${c.rst} | HEARTBEAT: 60s${c.rst}\n`);
 
         let accounts = JSON.parse(fs.readFileSync(ACCOUNTS_JSON, 'utf8'));
