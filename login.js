@@ -5,15 +5,16 @@ const crypto = require('crypto');
 const readline = require('readline');
 const https = require('https');
 
-// --- THEME ---
 const c = { cy: '\x1b[36m', m: '\x1b[35m', y: '\x1b[33m', g: '\x1b[32m', r: '\x1b[31m', w: '\x1b[37m', gr: '\x1b[90m', b: '\x1b[1m', rst: '\x1b[0m' };
 
-// --- AUTO-INSTALL & FILE CHECK ---
 function setupEnvironment() {
     const pkgs = ['axios', 'moment', 'https-proxy-agent', 'socks-proxy-agent'];
-    pkgs.forEach(p => { try { require.resolve(p); } catch (e) { execSync(`npm install ${p}`, { stdio: 'inherit' }); } });
-
-    // Create files if they don't exist
+    pkgs.forEach(p => { 
+        try { require.resolve(p); } catch (e) { 
+            console.log(`${c.gr}Installing ${p}...${c.rst}`);
+            execSync(`npm install ${p}`, { stdio: 'inherit' }); 
+        } 
+    });
     if (!fs.existsSync(path.join(__dirname, 'accounts.json'))) fs.writeFileSync(path.join(__dirname, 'accounts.json'), '[]');
     if (!fs.existsSync(path.join(__dirname, 'logs.json'))) fs.writeFileSync(path.join(__dirname, 'logs.json'), '{}');
 }
@@ -40,7 +41,6 @@ function getAgent(proxy) {
 
 async function performLogin(targetAcc = null) {
     console.log(`\n${c.m}◢◤ ${c.cy}AUTH_PROTOCOL_INITIATED ${c.m}◥◣${c.rst}`);
-
     const loginId = await prompt('LOGIN ID: ');
     const passcode = await prompt('PASSCODE: ');
     const email = await prompt('EMAIL: ');
@@ -70,22 +70,14 @@ async function performLogin(targetAcc = null) {
 
         if (token) {
             console.log(`${c.y}⫸ SYNCING_MINI_APP_TOKEN...${c.rst}`);
-            // FIX: Added Authorization header to the Mini-App request
-            const miniRes = await axios.post(`${MINI_API_URL}/tracking/verify`, 
-                { loginId, appId: 'id__mk39oef6we80fs7j2rif' }, 
-                { 
-                    headers: { 
-                        'api-public': 'e97ae0aa6520499d9edf20bd5a1e13c7',
-                        'Authorization': `Bearer ${token}` 
-                    },
-                    httpsAgent: agent
-                }
+            const miniRes = await axios.post(`${MINI_API_URL}/tracking/verify`,
+                { loginId, appId: 'id__mk39oef6we80fs7j2rif' },
+                { headers: { 'api-public': 'e97ae0aa6520499d9edf20bd5a1e13c7', 'Authorization': `Bearer ${token}` }, httpsAgent: agent }
             );
-            
-            const miniToken = miniRes.data?.data?.token || null;
-
+            const miniToken = miniRes.data?.data?.token || miniRes.data?.token || null;
             saveAccount({ name: realName, token, miniToken, deviceId, proxy, ...identity });
             console.log(`${c.g}✅ ACCOUNT_SAVED: ${realName}${c.rst}`);
+            if (miniToken) console.log(`${c.g}✅ MINI_TOKEN_LINKED${c.rst}`);
             await new Promise(r => setTimeout(r, 2000));
         }
     } catch (e) {
@@ -106,8 +98,8 @@ async function main() {
     while (true) {
         console.clear();
         console.log(`${c.m}══ ${c.b}${c.cy}INTERLINK_MANAGER_v3.4${c.rst} ${c.m}══${c.rst}\n`);
-        
-        const accounts = JSON.parse(fs.readFileSync(ACCOUNTS_JSON, 'utf8'));
+        let accounts = JSON.parse(fs.readFileSync(ACCOUNTS_JSON, 'utf8'));
+
         if (accounts.length > 0) {
             accounts.forEach((a, i) => {
                 const s = a.miniToken ? `${c.g}YES${c.rst}` : `${c.r}NO${c.rst}`;
@@ -118,7 +110,7 @@ async function main() {
         console.log(`\n${c.cy}⫹── ${c.b}${c.w}1. ADD/FIX | 2. REMOVE | 3. EXIT${c.rst} ──⫺`);
         const choice = await prompt('ACTION: ');
         if (choice === '1') {
-            const id = await prompt('ID (BLANK FOR NEW): ');
+            const id = await prompt('ID (OR BLANK): ');
             await performLogin(accounts[id-1] || null);
         } else if (choice === '2') {
             const id = await prompt('REMOVE ID: ');
@@ -129,4 +121,4 @@ async function main() {
         } else if (choice === '3') process.exit(0);
     }
 }
-main();
+main().catch(err => console.error(err));

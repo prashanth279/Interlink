@@ -49,58 +49,61 @@ function createClient(acc, proxy) {
 }
 
 async function handleSpins(acc, proxy) {
-    if (!acc.miniToken || !spinEnabled) return { msg: "OFF", profit: 0 };
+    if (!acc.miniToken || !spinEnabled) return { msg: "OFF", profit: 0, count: 0 };
     try {
         const agent = proxy ? (proxy.startsWith('socks') ? new SocksProxyAgent(proxy.trim()) : new HttpsProxyAgent(proxy.trim())) : new https.Agent({ rejectUnauthorized: false });
         const mini = axios.create({ baseURL: MINI_API, headers: { 'Authorization': `Bearer ${acc.miniToken}`, 'origin': 'https://interlink-mini-app.interlinklabs.ai' }, httpsAgent: agent });
         const tktRes = await mini.get('/spin-ticket/get-number-of-tickets');
         let { numberOfTickets, isFirstTicket } = tktRes.data.data;
+        
+        let totalProfit = 0;
+        let spinsDone = 0;
+
         if (numberOfTickets === 0 && isFirstTicket) {
             await mini.post('/spin-ticket/buy', {}, { headers: { 'x-ref-id': crypto.randomUUID() } });
             numberOfTickets = 1;
         }
-        if (numberOfTickets > 0) {
+
+        while (numberOfTickets > 0) {
             const spin = await mini.get('/spin-reward/generate-random');
-            return { msg: `+${spin.data.data.spinRewardValue} SPN`, profit: parseFloat(spin.data.data.spinRewardValue) || 0 };
+            totalProfit += parseFloat(spin.data.data.spinRewardValue) || 0;
+            spinsDone++;
+            numberOfTickets--;
+            if (numberOfTickets > 0) await new Promise(r => setTimeout(r, 1500));
         }
-        return { msg: "0 TKT", profit: 0 };
-    } catch (e) { return { msg: "ERR", profit: 0 }; }
+
+        return { msg: spinsDone > 0 ? `+${totalProfit.toFixed(2)}` : "0 TKT", profit: totalProfit, count: spinsDone };
+    } catch (e) { return { msg: "ERR", profit: 0, count: 0 }; }
 }
 
 async function processAccount(acc, index, proxies) {
     const now = moment.utc();
     const today = now.format('YYYY-MM-DD');
+    const yesterday = moment.utc().subtract(1, 'day').format('YYYY-MM-DD');
     let logs = getLogs();
 
     if (!logs[today]) logs[today] = {};
     if (!logs[today][acc.deviceId]) {
-        logs[today][acc.deviceId] = { startBal: null, endBal: null, endBalTime: null, windows: {}, currentGold: 0, spinProfit: 0, lastSync: null };
+        logs[today][acc.deviceId] = { startBal: null, endBal: null, endBalTime: null, windows: {}, currentGold: 0, spinProfit: 0, spinCount: 0, lastSync: null };
     }
     let accLog = logs[today][acc.deviceId];
+    let prevLog = logs[yesterday]?.[acc.deviceId] || null;
+
     const proxyList = [acc.proxy, ...proxies].filter(p => p && p.trim().length > 0);
     const winHour = ([...WINDOWS].reverse().find(h => h <= now.hour()) || 0).toString().padStart(2, '0');
     
-    // RADIO SILENT LOGIC
     const isInitial = accLog.lastSync === null;
     const isClaimNeeded = !accLog.windows[winHour] && (forecasts[acc.deviceId] && now.isSameOrAfter(forecasts[acc.deviceId]));
+    const isDayEndSync = now.hour() === 23 && now.minute() >= 55 && !accLog.endBal;
     
     let client = null, data = null;
 
-    if (isInitial || isClaimNeeded) {
-        if (proxyList.length > 0) {
-            for (let p of proxyList.slice(0, 3)) {
-                try {
-                    const test = createClient(acc, p);
-                    const res = await test.get('/token/get-token');
-                    data = res.data.data; client = test; break;
-                } catch (e) {}
-            }
-        }
-        if (!client) {
+    if (isInitial || isClaimNeeded || isDayEndSync) {
+        for (let p of (proxyList.length > 0 ? proxyList.slice(0,3) : [null])) {
             try {
-                const direct = createClient(acc, null);
-                const res = await direct.get('/token/get-token');
-                data = res.data.data; client = direct;
+                const test = createClient(acc, p);
+                const res = await test.get('/token/get-token');
+                data = res.data.data; client = test; break;
             } catch (e) { currentStatus[acc.deviceId] = `${c.r}CONN_FAIL${c.rst}`; }
         }
     } else {
@@ -112,7 +115,7 @@ async function processAccount(acc, index, proxies) {
         accLog.lastSync = moment().format('HH:mm:ss');
         if (accLog.startBal === null) accLog.startBal = accLog.currentGold;
 
-        if (now.hour() >= 23 && now.minute() >= 50) {
+        if (isDayEndSync) {
             accLog.endBal = accLog.currentGold;
             accLog.endBalTime = accLog.lastSync;
         }
@@ -122,12 +125,22 @@ async function processAccount(acc, index, proxies) {
             currentStatus[acc.deviceId] = `${c.g}CLAIMING...${c.rst}`;
             await client.post('/token/claim-airdrop', {});
             accLog.windows[winHour] = moment().format('HH:mm');
+            
+            const postClaim = await client.get('/token/get-token');
+            accLog.currentGold = parseFloat(postClaim.data.data.interlinkGoldTokenAmount);
+            
             const spin = await handleSpins(acc, proxyList[0] || null);
             accLog.spinProfit += spin.profit;
+            accLog.spinCount += spin.count;
             currentStatus[acc.deviceId] = `${c.g}SUCCESS (${spin.msg})${c.rst}`;
-            forecasts[acc.deviceId] = null;
+            
+            // Forecast Fix: Push to next window after success
+            forecasts[acc.deviceId] = moment.utc(getNextWindow()).add(Math.floor(Math.random() * 15) + 5, 'minutes');
         } else {
-            currentStatus[acc.deviceId] = `${c.gr}WINDOW_COMPLETE${c.rst}`;
+            currentStatus[acc.deviceId] = isDayEndSync ? `${c.y}DAY_END_SYNCED${c.rst}` : `${c.gr}WINDOW_COMPLETE${c.rst}`;
+            // Forecast Fix: If already claimed or not claimable, push timer to next window
+            if (!accLog.windows[winHour]) accLog.windows[winHour] = "DONE"; 
+            forecasts[acc.deviceId] = moment.utc(getNextWindow()).add(Math.floor(Math.random() * 15) + 5, 'minutes');
         }
     }
 
@@ -135,17 +148,26 @@ async function processAccount(acc, index, proxies) {
     const dailyProfit = (accLog.currentGold - (accLog.startBal || accLog.currentGold)).toFixed(2);
     const winStr = WINDOWS.map(h => {
         const k = h.toString().padStart(2, '0');
-        const s = accLog.windows[k] || (now.hour() >= (h + 4) ? "MISS" : "--:--");
-        const clr = s.includes(':') && s !== "--:--" ? c.g : (s==="MISS"?c.r:c.gr);
-        return `${clr}${k}${c.rst}`;
+        const s = accLog.windows[k];
+        if (s && s !== "DONE") return `${c.g}${k}(${s})${c.rst}`;
+        if (s === "DONE") return `${c.y}${k}${c.rst}`;
+        return now.hour() >= (h + 4) ? `${c.r}${k}${c.rst}` : `${c.gr}${k}${c.rst}`;
     }).join(`${c.gr}|${c.rst}`);
 
     console.log(`${c.cy}⫸ ${c.b}${c.w}${acc.name || acc.deviceId.substring(0,8)} ${c.cy}⫷`);
     console.log(`${c.cy}⸽ ${c.rst}${currentStatus[acc.deviceId]}`);
-    console.log(`${c.cy}⸽ ${c.y}${accLog.currentGold.toFixed(2)}${c.rst} ${c.gr}(${accLog.lastSync || '--'})${c.rst} ${c.gr}|${c.rst} ${c.g}+${dailyProfit}${c.rst} ${c.gr}DAY${c.rst} ${c.gr}|${c.rst} ${c.m}+${(accLog.spinProfit || 0).toFixed(2)}${c.rst} ${c.gr}SPN${c.rst}`);
+    console.log(`${c.cy}⸽ ${c.y}${accLog.currentGold.toFixed(2)}${c.rst} ${c.gr}(${accLog.lastSync || '--'})${c.rst} ${c.gr}|${c.rst} ${c.g}+${dailyProfit}${c.rst} ${c.gr}DAY${c.rst} ${c.gr}|${c.rst} ${c.m}+${(accLog.spinProfit || 0).toFixed(2)}${c.rst} ${c.gr}SPN (${accLog.spinCount || 0})${c.rst}`);
     console.log(`${c.cy}⸽ ${c.rst}WIN: ${winStr}`);
-    if (accLog.endBal) console.log(`${c.cy}⸽ ${c.rst}EOD: ${c.w}${accLog.endBal.toFixed(2)}${c.rst} ${c.gr}@${accLog.endBalTime || 'RECO'}${c.rst}`);
-    console.log(`${c.cy}⫹── ${c.b}${c.cy}${forecasts[acc.deviceId] ? forecasts[acc.deviceId].local().format('HH:mm:ss') : "SHIFTING..." } ──⫺${c.rst}\n`);
+    
+    if (prevLog) {
+        console.log(`${c.cy}⸽ ${c.rst}YST: ${c.w}${prevLog.currentGold.toFixed(2)}${c.rst} ${c.gr}@${prevLog.lastSync || 'EOD'}${c.rst}`);
+    } else if (accLog.endBal) {
+        console.log(`${c.cy}⸽ ${c.rst}EOD: ${c.w}${accLog.endBal.toFixed(2)}${c.rst} ${c.gr}@${accLog.endBalTime}${c.rst}`);
+    }
+
+    const tMinus = forecasts[acc.deviceId] ? moment.duration(forecasts[acc.deviceId].diff(now)) : null;
+    const cdStr = (tMinus && tMinus.asSeconds() > 0) ? ` (T-${tMinus.hours()}h ${tMinus.minutes()}m)` : " (SYNC_NOW)";
+    console.log(`${c.cy}⫹── ${c.b}${c.cy}${forecasts[acc.deviceId] ? forecasts[acc.deviceId].local().format('HH:mm:ss') : "SHIFTING..."}${cdStr} ──⫺${c.rst}\n`);
     
     saveLogs(logs);
 }
@@ -168,10 +190,14 @@ async function main() {
             if (!forecasts[acc.deviceId]) {
                 const nW = getNextWindow(), curS = moment.utc(nW).subtract(4, 'hours');
                 const winK = curS.hour().toString().padStart(2, '0'), today = moment.utc().format('YYYY-MM-DD');
-                const rand = Math.floor(Math.random() * 20) + 5;
+                const rand = Math.floor(Math.random() * 15) + 5;
                 let target = moment.utc(curS).add(rand, 'minutes');
-                if (logs[today]?.[acc.deviceId]?.windows?.[winK]) forecasts[acc.deviceId] = moment.utc(nW).add(rand, 'minutes');
-                else forecasts[acc.deviceId] = moment.utc().isAfter(target) ? moment.utc().add(1, 'minute') : target;
+                
+                if (logs[today]?.[acc.deviceId]?.windows?.[winK]) {
+                    forecasts[acc.deviceId] = moment.utc(nW).add(rand, 'minutes');
+                } else {
+                    forecasts[acc.deviceId] = moment.utc().isAfter(target) ? moment.utc().add(1, 'minute') : target;
+                }
             }
         });
 
