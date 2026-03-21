@@ -36,11 +36,29 @@ function getNextWindow() {
 }
 
 function createClient(acc, proxy) {
-    const agent = proxy ? (proxy.startsWith('socks') ? new SocksProxyAgent(proxy.trim()) : new HttpsProxyAgent(proxy.trim())) : new https.Agent({ rejectUnauthorized: false });
+    let agent;
+    if (proxy) {
+        const proxyUrl = proxy.trim();
+        if (proxyUrl.startsWith('socks')) {
+            agent = new SocksProxyAgent(proxyUrl);
+        } else {
+            agent = new HttpsProxyAgent(proxyUrl);
+        }
+    } else {
+        agent = new https.Agent({ rejectUnauthorized: false });
+    }
+
     return axios.create({
         baseURL: API_BASE,
-        headers: { 'Authorization': `Bearer ${acc.token}`, 'User-Agent': 'okhttp/4.12.0', 'x-unique-id': acc.deviceId, 'version': '1.1.8' },
-        httpsAgent: agent, timeout: 15000
+        headers: { 
+            'Authorization': `Bearer ${acc.token}`, 
+            'User-Agent': 'okhttp/4.12.0', 
+            'x-unique-id': acc.deviceId, 
+            'version': '1.1.8' 
+        },
+        httpsAgent: agent,
+        proxy: false, // Disables axios default proxy logic to use our agent
+        timeout: 15000
     });
 }
 
@@ -110,7 +128,6 @@ async function processAccount(acc, index, proxies) {
         console.log(`${c.cy}⸽ ${c.rst}YST: ${c.w}${prevLog.currentGold.toFixed(2)}${c.rst} ${c.gr}@${prevLog.lastSync || 'EOD'}${c.rst}`);
     }
 
-    // 3-Line Window Grid (2 windows per line)
     const windowPairs = [[0,4], [8,12], [16,20]];
     windowPairs.forEach(pair => {
         const line = pair.map(h => {
@@ -141,6 +158,11 @@ async function main() {
         console.log(`${c.m}══ ${c.b}${c.cy}INTERLINK FARMER: CORE EDITION${c.rst} ${c.m}══${c.rst}`);
         console.log(`${c.gr}GMT ${moment().format('Z')}${c.rst}`);
         console.log(`${c.w}WINDOW: ${winStart.toString().padStart(2,'0')}:00-${winEnd.toString().padStart(2,'0')}:00 | REMAINING: ${rem.hours()}h ${rem.minutes()}m${c.rst}\n`);
+
+        if (!fs.existsSync(ACCOUNTS_JSON)) {
+            console.log(`${c.r}Error: accounts.json not found!${c.rst}`);
+            process.exit(1);
+        }
 
         let accounts = JSON.parse(fs.readFileSync(ACCOUNTS_JSON, 'utf8'));
         const proxies = fs.existsSync(PROXIES_TXT) ? fs.readFileSync(PROXIES_TXT, 'utf8').split('\n').filter(Boolean) : [];
