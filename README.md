@@ -34,10 +34,7 @@ cd interlink
 ```
 ```bash
 # Install dependencies
-pkg update && pkg upgrade
-pkg install nodejs git -y
-npm install axios moment moment-timezone https-proxy-agent socks-proxy-agent
-npm list --depth=0
+npm install
 ```
 ---
 ### 2️⃣ 🔑 Login
