@@ -24,7 +24,7 @@ An advanced, automated farming solution for the **Interlink Network**, engineere
 * For termux android- install apk from [Github](https://github.com/termux/termux-app) or [F-droid](https://f-droid.org/en/packages/com.termux/) not playstore
 * Install GitHub package(ignore if installed)
 ```bash
-Pkg install git
+pkg install git
 ```
 ### Setup
 ```bash
