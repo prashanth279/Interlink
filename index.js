@@ -2,26 +2,95 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const moment = require('moment');
+const crypto = require('crypto');
+const https = require('https');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 
-const API_BASE_URL = 'https://prod.interlinklabs.ai/api/v1';
 const ACCOUNTS_JSON = path.join(__dirname, 'accounts.json');
 const LOGS_JSON = path.join(__dirname, 'logs.json');
 const PROXIES_TXT = path.join(__dirname, 'proxies.txt');
+const API_BASE = 'https://prod.interlinklabs.ai/api/v1';
+const WINDOWS = [0, 4, 8, 12, 16, 20];
 
-const WINDOWS = [0, 4, 8, 12, 16, 20]; 
-const c = { g: '\x1b[32m', y: '\x1b[33m', r: '\x1b[31m', w: '\x1b[37m', cy: '\x1b[36m', gr: '\x1b[90m', rs: '\x1b[0m', b: '\x1b[1m', m: '\x1b[35m' };
+// Advanced 256-Color Palette
+const c = {
+    p: '\x1b[38;5;39m',   // Primary Blue
+    s: '\x1b[38;5;198m',  // Secondary Pink
+    a: '\x1b[38;5;118m',  // Accent Green
+    w: '\x1b[38;5;220m',  // Warning Gold
+    e: '\x1b[38;5;196m',  // Error Red
+    g: '\x1b[38;5;46m',   // Success Green
+    wh: '\x1b[97m',       // Bright White
+    gr: '\x1b[38;5;245m', // Gray
+    cy: '\x1b[36m',       // Cyan Line
+    b: '\x1b[1m',         // Bold
+    rst: '\x1b[0m'        // Reset
+};
 
+// Global State
 let forecasts = {};
+let currentStatus = {};
+let proxyStatus = {};
+let sessionSynced = new Set(); // Tracks initial balance fetch
+let isShuttingDown = false;
 
-function getLogs() {
-    if (!fs.existsSync(LOGS_JSON)) return {};
-    try { return JSON.parse(fs.readFileSync(LOGS_JSON, 'utf8')); } catch (e) { return {}; }
+// --- MIGRATION & BACKWARD COMPATIBILITY ---
+function migrateData() {
+    let accounts = [];
+    try { accounts = JSON.parse(fs.readFileSync(ACCOUNTS_JSON, 'utf8')); } catch(e) { accounts = []; }
+    
+    let accUpdated = false;
+    accounts.forEach(acc => {
+        if (!acc.deviceId) {
+            acc.deviceId = crypto.randomBytes(8).toString('hex');
+            accUpdated = true;
+        }
+    });
+    if (accUpdated) fs.writeFileSync(ACCOUNTS_JSON, JSON.stringify(accounts, null, 2));
+
+    let logs = {};
+    try { logs = JSON.parse(fs.readFileSync(LOGS_JSON, 'utf8')); } catch(e) { logs = {}; }
+    
+    let logsUpdated = false;
+    for (const day in logs) {
+        for (const id in logs[day]) {
+            if (logs[day][id].currentGold !== undefined) {
+                logs[day][id].tokens = { G: logs[day][id].currentGold, S: 0, D: 0, INT: 0 };
+                delete logs[day][id].currentGold;
+                logsUpdated = true;
+            }
+        }
+    }
+    if (logsUpdated) fs.writeFileSync(LOGS_JSON, JSON.stringify(logs, null, 2));
+    
+    return { accounts, logs };
 }
 
-function saveLogs(logs) {
-    fs.writeFileSync(LOGS_JSON, JSON.stringify(logs, null, 2));
+// --- UTILITIES ---
+const getLogs = () => {
+    if (!fs.existsSync(LOGS_JSON)) return {};
+    try { return JSON.parse(fs.readFileSync(LOGS_JSON, 'utf8')); } catch (e) { return {}; }
+};
+
+const saveLogs = (l) => {
+    if (!isShuttingDown) fs.writeFileSync(LOGS_JSON, JSON.stringify(l, null, 2));
+};
+
+function extractIp(proxyUrl) {
+    if (!proxyUrl) return 'NONE';
+    try {
+        const match = proxyUrl.match(/@([\d\.]+):/);
+        return match ? match[1] : proxyUrl.split('://')[1].split(':')[0];
+    } catch (e) { return 'UNKNOWN_IP'; }
+}
+
+function getJwtExp(token) {
+    if (!token) return 0;
+    try {
+        const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+        return payload.exp;
+    } catch (e) { return 0; }
 }
 
 function getNextWindow() {
@@ -33,128 +102,295 @@ function getNextWindow() {
     return nextDate;
 }
 
-function createApiClient(token, proxy, deviceId) {
-    const agent = proxy ? (proxy.startsWith('socks') ? new SocksProxyAgent(proxy.trim()) : new HttpsProxyAgent(proxy.trim())) : null;
-    return axios.create({
-        baseURL: API_BASE_URL,
-        headers: { 'Authorization': `Bearer ${token}`, 'User-Agent': 'okhttp/4.12.0', 'x-unique-id': deviceId, 'x-device-id': deviceId, 'version': '1.1.8' },
-        httpsAgent: agent, timeout: 30000
-    });
+function maskData(str) {
+    if (!str) return 'N/A';
+    if (str.includes('@')) {
+        const [local, domain] = str.split('@');
+        if (local.length <= 3) return `${local[0]}***@${domain}`;
+        return `${local.substring(0, 3)}***${local.substring(local.length - 2)}@${domain}`;
+    }
+    return str.length > 8 ? `${str.substring(0, 4)}***${str.substring(str.length - 4)}` : str;
 }
 
-async function processAccount(acc, index, proxies) {
-    const proxy = proxies[index % proxies.length] || null;
-    const client = createApiClient(acc.token, proxy, acc.deviceId);
+// --- CORE API CLIENT ---
+function createClient(acc, proxy) {
+    const agent = proxy ? (proxy.startsWith('socks') ? new SocksProxyAgent(proxy.trim()) : new HttpsProxyAgent(proxy.trim())) : new https.Agent({ rejectUnauthorized: false });
+    
+    const config = {
+        baseURL: API_BASE,
+        headers: { 
+            'Authorization': `Bearer ${acc.token}`, 
+            'User-Agent': 'okhttp/4.12.0',
+            'Accept-Encoding': 'gzip',
+            'x-unique-id': acc.deviceId,
+            'x-model': 'Redmi Note 8 Pro',
+            'x-brand': 'XiaoMi',
+            'x-system-name': 'Android',
+            'x-device-id': acc.deviceId,
+            'x-bundle-id': 'org.ai.interlinklabs.interlinkId',
+            'version': '1.1.8'
+        },
+        httpsAgent: agent, 
+        timeout: 15000,
+        proxy: false
+    };
+
+    const instance = axios.create(config);
+    instance.interceptors.request.use((conf) => {
+        conf.headers['x-date'] = Date.now().toString();
+        if (conf.method === 'post') {
+            const body = conf.data ? (typeof conf.data === 'object' ? JSON.stringify(conf.data) : conf.data.toString()) : "{}";
+            conf.headers['x-content-hash'] = crypto.createHash('sha256').update(body, 'utf8').digest('base64');
+        }
+        return conf;
+    });
+
+    return instance;
+}
+
+// --- PULSE CHECK ---
+async function pulseCheck(proxyUrl) {
+    try {
+        const agent = proxyUrl ? (proxyUrl.startsWith('socks') ? new SocksProxyAgent(proxyUrl.trim()) : new HttpsProxyAgent(proxyUrl.trim())) : null;
+        await axios.get('https://api.ipify.org?format=json', { httpsAgent: agent, timeout: 10000 });
+        return true;
+    } catch (e) { return false; }
+}
+
+// --- ACCOUNT PROCESSING ---
+async function processAccount(acc, idx) {
     const now = moment.utc();
     const today = now.format('YYYY-MM-DD');
+    const yesterday = moment.utc().subtract(1, 'day').format('YYYY-MM-DD');
     let logs = getLogs();
-
+    
+    const id = acc.email || acc.deviceId;
     if (!logs[today]) logs[today] = {};
-    if (!logs[today][acc.deviceId]) {
-        logs[today][acc.deviceId] = { startBal: null, windows: {}, currentGold: 0, currentITLG: 0 };
+    if (!logs[today][id]) {
+        logs[today][id] = { startBal: null, windows: {}, tokens: { G: 0, S: 0, D: 0, INT: 0 }, lastSync: null, lastClaimServer: null };
     }
-    const accLog = logs[today][acc.deviceId];
-    if (!accLog.windows) accLog.windows = {};
+    let accLog = logs[today][id];
+    let prevLog = logs[yesterday]?.[id] || null;
 
-    const lastWindowHour = [...WINDOWS].reverse().find(h => h <= now.hour()) || 0;
-    const winKey = lastWindowHour.toString().padStart(2, '0');
+    // Fast-Fail for Paused Accounts
+    if (acc.paused) {
+        currentStatus[id] = `${c.e}PAUSED${c.rst}`;
+        proxyStatus[id] = `${c.gr}N/A${c.rst}`;
+        displayAccount(acc, idx, accLog, prevLog);
+        return;
+    }
+
+    // 1. JWT Pre-Check
+    const exp = getJwtExp(acc.token);
+    const nowTs = Math.floor(Date.now() / 1000);
+    if (exp > 0 && nowTs > exp) {
+        currentStatus[id] = `${c.e}AUTH_EXP${c.rst}`;
+        displayAccount(acc, idx, accLog, prevLog);
+        return;
+    }
+
+    // 2. Pulse Check
+    const hasProxy = !!acc.proxy;
+    const proxyIp = extractIp(acc.proxy);
+    const isAlive = await pulseCheck(acc.proxy);
+    
+    if (!isAlive) {
+        proxyStatus[id] = hasProxy ? `${c.e}${proxyIp} ● DEAD${c.rst}` : `${c.e}LOCAL_NET ● DEAD${c.rst}`;
+        currentStatus[id] = `${c.e}CONN_FAIL${c.rst}`;
+        displayAccount(acc, idx, accLog, prevLog);
+        return;
+    }
+    
+    proxyStatus[id] = hasProxy ? `${c.gr}${proxyIp}${c.rst}` : `${c.gr}NONE${c.rst}`;
+
+    const client = createClient(acc, acc.proxy);
+    const winHour = ([...WINDOWS].reverse().find(h => h <= now.hour()) || 0).toString().padStart(2, '0');
+
+    // 3. Initial Balance Sync (Forces update on script start)
+    if (!sessionSynced.has(id)) {
+        try {
+            const balRes = await client.get('/token/get-token');
+            const tData = balRes.data.data;
+            accLog.tokens = {
+                G: parseFloat(tData.interlinkGoldTokenAmount || 0),
+                S: parseFloat(tData.interlinkSilverTokenAmount || 0),
+                D: parseFloat(tData.interlinkDiamondTokenAmount || 0),
+                INT: parseFloat(tData.interlinkTokenAmount || 0)
+            };
+            if (tData.lastClaimTime) accLog.lastClaimServer = moment(tData.lastClaimTime).format('YYYY-MM-DD HH:mm:ss');
+            accLog.lastSync = moment().format('HH:mm:ss');
+            
+            // Set base balance for profit tracking 
+            if (accLog.startBal === null) accLog.startBal = prevLog ? prevLog.tokens.G : accLog.tokens.G;
+            
+            sessionSynced.add(id);
+            saveLogs(logs);
+        } catch (e) {
+            currentStatus[id] = `${c.e}SYNC_FAIL${c.rst}`;
+        }
+    }
+
+    // 4. API Execution
+    const isClaimNeeded = (forecasts[id] && now.isSameOrAfter(forecasts[id]));
+    
+    if (!isClaimNeeded) {
+        currentStatus[id] = `${c.gr}STEALTH MODE${c.rst}`;
+        displayAccount(acc, idx, accLog, prevLog);
+        return;
+    }
 
     try {
-        const scheduledTime = forecasts[acc.deviceId];
-        const isMineTime = scheduledTime && now.isSameOrAfter(scheduledTime);
-        const nextWin = getNextWindow();
-        const isSafetyTime = now.isAfter(moment.utc(nextWin).subtract(15, 'minutes')) && !accLog.windows[winKey];
-
-        // Stealth: Only call API if it's time to mine, safety check, or initial setup
-        if (isMineTime || isSafetyTime || accLog.startBal === null) {
-            const bRes = await client.get('/token/get-token');
-            const data = bRes.data.data;
-            accLog.currentGold = parseFloat(data.interlinkGoldTokenAmount) || 0;
-            accLog.currentITLG = parseFloat(data.interlinkTokenAmount) || 0;
-
-            if (accLog.startBal === null) accLog.startBal = accLog.currentGold;
-
-            const check = await client.get('/token/check-is-claimable');
-            if (check.data?.data?.isClaimable) {
-                await client.post('/token/claim-airdrop', {});
-                accLog.windows[winKey] = moment().format('HH:mm');
-                forecasts[acc.deviceId] = null; 
-            } else if (isSafetyTime || isMineTime) {
-                if (!accLog.windows[winKey]) accLog.windows[winKey] = "MISS";
-                forecasts[acc.deviceId] = null;
-            }
+        const check = await client.get('/token/check-is-claimable');
+        if (check.data?.data?.isClaimable) {
+            await client.post('/token/claim-airdrop', {});
+            accLog.windows[winHour] = moment().format('HH:mm');
+            
+            // Refresh balance and server claim time
+            const postBal = await client.get('/token/get-token');
+            const newTData = postBal.data.data;
+            accLog.tokens.G = parseFloat(newTData.interlinkGoldTokenAmount || 0);
+            if (newTData.lastClaimTime) accLog.lastClaimServer = moment(newTData.lastClaimTime).format('YYYY-MM-DD HH:mm:ss');
+            currentStatus[id] = `${c.g}CLAIM SUCCESS${c.rst}`;
+        } else {
+            currentStatus[id] = `${c.a}WINDOW COMPLETE${c.rst}`;
+            if (!accLog.windows[winHour]) accLog.windows[winHour] = "DONE";
         }
-
-        const earned = (accLog.currentGold - accLog.startBal) || 0;
-
-        console.log(`${c.cy}╭ Account #${index + 1} ❯ ${c.w}${acc.deviceId.substring(0,8)}${c.rs}`);
-        console.log(`${c.cy}┣ GOLD     : ${c.y}${accLog.currentGold.toFixed(2)}${c.rs} ${c.gr}|${c.cy} ITLG: ${accLog.currentITLG.toFixed(2)}${c.rs}`);
-        console.log(`${c.cy}┣ TODAY    : ${c.g}+${earned.toFixed(2)} GOLD${c.rs}`);
         
-        // Window Status Bar Logic
-        let winBar = WINDOWS.map(h => {
-            const key = h.toString().padStart(2, '0');
-            const isPastFullWindow = now.hour() >= (h + 4) || (h > now.hour() && now.day() > moment.utc().day());
-            const status = accLog.windows[key] || (isPastFullWindow ? "MISS" : "----");
-            const color = status === "MISS" ? c.r : (status.includes(':') ? c.g : c.gr);
-            return `${c.w}${key}${c.rs}:${color}${status}${c.rs}`;
-        }).join(`${c.gr} | ${c.rs}`);
-
-        console.log(`${c.cy}┣ WINDOWS  : ${winBar}`);
-        const fTime = forecasts[acc.deviceId] ? forecasts[acc.deviceId].local().format('HH:mm') : "Shifting...";
-        console.log(`${c.cy}╰ FORECAST : ${c.cy}${fTime}${c.rs}\n`);
-
+        forecasts[id] = moment.utc(getNextWindow()).add(Math.floor(Math.random() * 15) + 5, 'minutes');
         saveLogs(logs);
+
     } catch (e) {
-        console.log(`${c.cy}╰ ERROR    : ${c.r}Sync Error (Network/Proxy)${c.rs}\n`);
+        if (e.response) currentStatus[id] = `${c.e}ERR_${e.response.status}${c.rst}`;
+        else currentStatus[id] = `${c.e}API_DOWN${c.rst}`;
     }
+    
+    displayAccount(acc, idx, accLog, prevLog);
 }
 
+// --- DISPLAY LOGIC (THEME STRICTLY ADHERED) ---
+function displayAccount(acc, idx, accLog, prevLog) {
+    const id = acc.email || acc.deviceId;
+    
+    // Profit Calculation Fix (Strictly anchors to YST if available)
+    const baseBal = prevLog ? prevLog.tokens.G : (accLog.startBal || accLog.tokens.G);
+    const dailyProfit = (accLog.tokens.G - baseBal).toFixed(2);
+    
+    const stat = currentStatus[id] || `${c.gr}WAITING${c.rst}`;
+    const pStat = proxyStatus[id] || `${c.gr}CHECKING${c.rst}`;
+    
+    // Line 1: Acc 1: username | id | Referral ID: referal_id
+    const uName = acc.name || 'Unknown';
+    const lId = acc.loginId || 'N/A';
+    const rId = acc.referralId || 'N/A';
+    console.log(`${c.cy}⫸ ${c.wh}${c.b}Acc ${idx + 1}:${c.rst} ${c.p}${uName}${c.rst} | ${c.wh}${lId}${c.rst} | ${c.s}Referral ID: ${rId}${c.rst}`);
+    
+    // Line 2: Status | Last Claim: HH:mm DD-MM-YY
+    let lastClaimStr = accLog.lastClaimServer ? moment(accLog.lastClaimServer, 'YYYY-MM-DD HH:mm:ss').format('HH:mm DD-MM-YY') : 'N/A';
+    console.log(`${c.cy}⸽ ${c.rst}Status: ${stat} | Last Claim: ${c.gr}${lastClaimStr}${c.rst}`);
+    
+    // Line 3: All balances: G is green and rest are grey if 0
+    let gStr = `${c.g}${accLog.tokens.G.toFixed(2)}${c.rst}`;
+    let sStr = accLog.tokens.S > 0 ? `${c.wh}${accLog.tokens.S.toFixed(2)}${c.rst}` : `${c.gr}0.00${c.rst}`;
+    let dStr = accLog.tokens.D > 0 ? `${c.p}${accLog.tokens.D.toFixed(2)}${c.rst}` : `${c.gr}0.00${c.rst}`;
+    let intStr = accLog.tokens.INT > 0 ? `${c.g}${accLog.tokens.INT.toFixed(2)}${c.rst}` : `${c.gr}0.00${c.rst}`;
+    console.log(`${c.cy}⸽ ${c.rst}G: ${gStr} | S: ${sStr} | D: ${dStr} | INT: ${intStr}`);
+    
+    // Line 4: Today mined(profit) and updated time | yst bal and update time.
+    let ystStr = prevLog ? prevLog.tokens.G.toFixed(2) : '0.00';
+    let ystTime = prevLog?.lastSync || 'EOD';
+    console.log(`${c.cy}⸽ ${c.rst}Profit: ${c.g}+${dailyProfit}${c.rst} ${c.gr}(${accLog.lastSync || '--'})${c.rst} | YST: ${c.wh}${ystStr}${c.rst} ${c.gr}(${ystTime})${c.rst}`);
+    
+    // Line 5: Wallet | Spin | Proxy Extra Info
+    let walletWord = (acc.wallet && acc.wallet !== 'None') ? `${c.g}Wallet${c.rst}` : `${c.gr}Wallet${c.rst}`;
+    let spinWord = acc.paused ? `${c.e}Spin${c.rst}` : (acc.miniToken ? `${c.g}Spin${c.rst}` : `${c.gr}Spin${c.rst}`);
+    console.log(`${c.cy}⸽ ${c.rst}${walletWord} | ${spinWord} | Proxy: ${pStat}`);
+    
+    // Line 6, 7, 8: Windows Multi-line Local Grid with (00:00) formatting
+    const windowPairs = [[0,4], [8,12], [16,20]];
+    const now = moment.utc();
+    
+    windowPairs.forEach(pair => {
+        const line = pair.map(h => {
+            const k = h.toString().padStart(2, '0'); // UTC key
+            const localWin = moment.utc().hour(h).minute(0).local().format('HH:mm'); // Local display
+            const s = accLog.windows[k];
+            const winEnd = moment.utc().hour(h).minute(0).add(4, 'hours');
+            const isPast = now.isSameOrAfter(winEnd);
+
+            if (s && s !== "DONE") return `${c.g}${localWin}(${s})${c.rst}`;
+            if (s === "DONE") return `${c.w}${localWin}(DONE)${c.rst}`;
+            return isPast ? `${c.e}${localWin}${c.gr}(00:00)${c.rst}` : `${c.gr}${localWin}(00:00)${c.rst}`;
+        }).join(` ${c.gr}|${c.rst} `);
+        console.log(`${c.cy}⸽ ${c.rst}${line}`);
+    });
+
+    // Line 9: Countdown
+    const tM = forecasts[id] ? moment.duration(forecasts[id].diff(now)) : null;
+    const cdStr = (tM && tM.asSeconds() > 0) ? `${c.gr}(T-${tM.hours()}h ${tM.minutes()}m)${c.rst}` : `${c.g}(SYNC)${c.rst}`;
+    const nextStr = forecasts[id] ? forecasts[id].local().format('HH:mm:ss') : "CALCULATING";
+    console.log(`${c.cy}⫹── ${c.rst}Next Claim: ${c.b}${c.wh}${nextStr}${c.rst} ${cdStr}\n`);
+}
+
+// --- MAIN LOOP ---
 async function main() {
-    while (true) {
-        const now = moment.utc();
-        console.clear();
-        console.log(`${c.m}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${c.rs}`);
-        console.log(`${c.m}┃${c.b}${c.w} INTERLINK PRECISION FARMER ${c.rs}     ${c.b}${c.cy}BY PRASHANTH ${c.m}┃${c.rs}`);
-        console.log(`${c.m}┃${c.gr} UTC: ${now.format('HH:mm:ss')} | MODE: STEALTH PRECISION    ${c.m}┃${c.rs}`);
-        console.log(`${c.m}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${c.rs}\n`);
+    const { accounts, logs } = migrateData();
+    const today = moment.utc().format('YYYY-MM-DD');
 
-        let accounts = [];
-        try { accounts = JSON.parse(fs.readFileSync(ACCOUNTS_JSON, 'utf8')); } catch (e) { console.log("Account file error"); process.exit(1); }
+    // Missed Window Check & Initialization
+    accounts.forEach(acc => {
+        const id = acc.email || acc.deviceId;
+        if (!forecasts[id]) {
+            const now = moment.utc();
+            const curWinStartHour = Math.floor(now.hour() / 4) * 4;
+            const winK = curWinStartHour.toString().padStart(2, '0');
 
-        const proxies = fs.existsSync(PROXIES_TXT) ? fs.readFileSync(PROXIES_TXT, 'utf8').split('\n').filter(Boolean).map(p => p.trim()) : [];
-        const logs = getLogs();
-
-        accounts.forEach(acc => {
-            if (!forecasts[acc.deviceId]) {
-                const nextWin = getNextWindow();
-                const currentWindowStart = moment.utc(nextWin).subtract(4, 'hours');
-                const winKey = currentWindowStart.hour().toString().padStart(2, '0');
-                const today = now.format('YYYY-MM-DD');
-                
-                if (!logs[today]?.[acc.deviceId]?.windows?.[winKey]) {
-                    const randomMins = Math.floor(Math.random() * 22) + 2; 
-                    let target = moment.utc(currentWindowStart).add(randomMins, 'minutes');
-                    if (now.isAfter(target)) target = moment.utc().add(1, 'minute');
-                    forecasts[acc.deviceId] = target;
-                } else {
-                    const randomMins = Math.floor(Math.random() * 22) + 2;
-                    forecasts[acc.deviceId] = moment.utc(nextWin).add(randomMins, 'minutes');
-                }
+            if (logs[today]?.[id]?.windows?.[winK]) {
+                const nW = getNextWindow();
+                forecasts[id] = moment.utc(nW).add(Math.floor(Math.random() * 15) + 5, 'minutes');
+            } else {
+                forecasts[id] = moment.utc().add(2, 'seconds');
             }
-        });
-
-        for (let i = 0; i < accounts.length; i++) {
-            await processAccount(accounts[i], i, proxies);
-            if (i < accounts.length - 1) await new Promise(r => setTimeout(r, 2000));
         }
+    });
 
-        // Live Countdown
-        for (let i = 60; i > 0; i--) {
-            process.stdout.write(`\r ${c.cy}●${c.rs} ${c.w}Heartbeat: Rescan in ${c.y}${i}s${c.w}...${c.rs}   `);
-            await new Promise(r => setTimeout(r, 1000));
+    while (!isShuttingDown) {
+        console.clear();
+        const now = moment.utc();
+        const winStartUtc = Math.floor(now.hour() / 4) * 4;
+        const winEndUtc = (winStartUtc + 4) % 24;
+        
+        const localWinStart = moment.utc().hour(winStartUtc).minute(0).local().format('HH:mm');
+        const localWinEnd = moment.utc().hour(winEndUtc === 0 ? 24 : winEndUtc).minute(0).local().format('HH:mm');
+        
+        const diff = moment.utc().hour(winEndUtc === 0 ? 24 : winEndUtc).minute(0).second(0).diff(now);
+        const rem = moment.duration(diff);
+
+        // Print Original Header Style (Untouched)
+        console.log(`\n           ${c.s}${c.b}INTERLINK FARMER: by PRASHANTH${c.rst}`);
+        console.log(`      ${c.gr}GMT ${moment().format('Z')} | Window: ${localWinStart}-${localWinEnd} | Rem: ${rem.hours()}h ${rem.minutes()}m${c.rst}\n`);
+        console.log(`${c.cy}─${c.rst}`.repeat(60) + `\n`);
+
+        for (let i = 0; i < accounts.length; i++) { 
+            if (isShuttingDown) break;
+            await processAccount(accounts[i], i); 
+            console.log(`${c.cy}─${c.rst}`.repeat(60) + `\n`);
+        }
+        
+        // Heartbeat Loop
+        for (let i = 60; i > 0; i--) { 
+            if (isShuttingDown) break;
+            process.stdout.write(`\r ${c.p}⫸${c.rst} HEARTBEAT: ${c.w}${i}s${c.rst} (Press Ctrl+C to safely exit)  `); 
+            await new Promise(r => setTimeout(r, 1000)); 
         }
     }
 }
 
-main();
+// --- GRACEFUL SHUTDOWN ---
+process.on('SIGINT', () => {
+    isShuttingDown = true;
+    console.log(`\n\n${c.e}${c.b}>>> SHUTTING DOWN SAFELY... Saving logs.json... <<<${c.rst}\n`);
+    fs.writeFileSync(LOGS_JSON, JSON.stringify(getLogs(), null, 2));
+    process.exit(0);
+});
+
+main().catch(err => console.log(`\n${c.e}FATAL ERROR: ${err.message}${c.rst}`));

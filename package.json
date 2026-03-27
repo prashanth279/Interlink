@@ -4,7 +4,7 @@
   "description": "Automated Interlink Farmer Core Edition",
   "main": "mine.js",
   "scripts": {
-    "start": "node mine.js",
+    "start": "node index.js",
     "login": "node login.js"
   },
   "repository": {
