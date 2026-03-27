@@ -30,7 +30,12 @@ pkg install git
 ```bash
 # Clone the repository
 git clone https://github.com/prashanth279/interlink.git
+```
+```
 cd interlink
+```
+```
+pkg install nodejs-lts
 ```
 ```bash
 # Install dependencies
