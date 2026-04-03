@@ -77,8 +77,20 @@ const saveLogs = (l) => {
     if (!isShuttingDown) fs.writeFileSync(LOGS_JSON, JSON.stringify(l, null, 2));
 };
 
+function updateAccountTokens(accId, newToken, newRefreshToken) {
+    try {
+        let accs = JSON.parse(fs.readFileSync(ACCOUNTS_JSON, 'utf8'));
+        let idx = accs.findIndex(a => (a.email || a.deviceId || a.loginId) === accId);
+        if (idx !== -1) {
+            accs[idx].token = newToken;
+            if (newRefreshToken) accs[idx].refreshToken = newRefreshToken;
+            fs.writeFileSync(ACCOUNTS_JSON, JSON.stringify(accs, null, 2));
+        }
+    } catch (e) { /* silent fail if read/write error */ }
+}
+
 function extractIp(proxyUrl) {
-    if (!proxyUrl) return 'NONE';
+    if (!proxyUrl || proxyUrl.toUpperCase() === 'NONE') return 'NONE';
     try {
         const match = proxyUrl.match(/@([\d\.]+):/);
         return match ? match[1] : proxyUrl.split('://')[1].split(':')[0];
@@ -112,46 +124,65 @@ function maskData(str) {
     return str.length > 8 ? `${str.substring(0, 4)}***${str.substring(str.length - 4)}` : str;
 }
 
-// --- CORE API CLIENT ---
+// --- CORE API CLIENT (HEADER BYPASS APPLIED) ---
 function createClient(acc, proxy) {
-    const agent = proxy ? (proxy.startsWith('socks') ? new SocksProxyAgent(proxy.trim()) : new HttpsProxyAgent(proxy.trim())) : new https.Agent({ rejectUnauthorized: false });
+    const agent = (proxy && proxy.toUpperCase() !== 'NONE') ? (proxy.startsWith('socks') ? new SocksProxyAgent(proxy.trim()) : new HttpsProxyAgent(proxy.trim())) : new https.Agent({ rejectUnauthorized: false });
     
+    // Removed strict device, version, and content hash headers.
     const config = {
         baseURL: API_BASE,
         headers: { 
             'Authorization': `Bearer ${acc.token}`, 
             'User-Agent': 'okhttp/4.12.0',
-            'Accept-Encoding': 'gzip',
-            'x-unique-id': acc.deviceId,
-            'x-model': 'Redmi Note 8 Pro',
-            'x-brand': 'XiaoMi',
-            'x-system-name': 'Android',
-            'x-device-id': acc.deviceId,
-            'x-bundle-id': 'org.ai.interlinklabs.interlinkId',
-            'version': '1.1.8'
+            'Accept-Encoding': 'gzip, deflate',
+            'Content-Type': 'application/json'
         },
         httpsAgent: agent, 
         timeout: 15000,
         proxy: false
     };
 
-    const instance = axios.create(config);
-    instance.interceptors.request.use((conf) => {
-        conf.headers['x-date'] = Date.now().toString();
-        if (conf.method === 'post') {
-            const body = conf.data ? (typeof conf.data === 'object' ? JSON.stringify(conf.data) : conf.data.toString()) : "{}";
-            conf.headers['x-content-hash'] = crypto.createHash('sha256').update(body, 'utf8').digest('base64');
-        }
-        return conf;
-    });
+    return axios.create(config);
+}
 
-    return instance;
+// --- AUTO-REFRESH ENGINE ---
+async function doRefreshToken(acc) {
+    if (!acc.refreshToken) return false;
+    try {
+        const agent = (acc.proxy && acc.proxy.toUpperCase() !== 'NONE') ? (acc.proxy.startsWith('socks') ? new SocksProxyAgent(acc.proxy.trim()) : new HttpsProxyAgent(acc.proxy.trim())) : new https.Agent({ rejectUnauthorized: false });
+        
+        const res = await axios.post(`${API_BASE}/auth/token`, 
+            { refreshToken: acc.refreshToken },
+            {
+                headers: { 
+                    'Authorization': `Bearer ${acc.token}`, 
+                    'User-Agent': 'okhttp/4.12.0',
+                    'Content-Type': 'application/json'
+                },
+                httpsAgent: agent,
+                timeout: 15000
+            }
+        );
+        
+        if (res.data && res.data.data) {
+            acc.token = res.data.data.accessToken || res.data.data.jwtToken;
+            acc.refreshToken = res.data.data.refreshToken || acc.refreshToken;
+            
+            // Save immediately so it persists across bot restarts
+            const id = acc.email || acc.deviceId || acc.loginId;
+            updateAccountTokens(id, acc.token, acc.refreshToken);
+            return true;
+        }
+        return false;
+    } catch (e) {
+        return false;
+    }
 }
 
 // --- PULSE CHECK ---
 async function pulseCheck(proxyUrl) {
     try {
-        const agent = proxyUrl ? (proxyUrl.startsWith('socks') ? new SocksProxyAgent(proxyUrl.trim()) : new HttpsProxyAgent(proxyUrl.trim())) : null;
+        const agent = (proxyUrl && proxyUrl.toUpperCase() !== 'NONE') ? (proxyUrl.startsWith('socks') ? new SocksProxyAgent(proxyUrl.trim()) : new HttpsProxyAgent(proxyUrl.trim())) : null;
         await axios.get('https://api.ipify.org?format=json', { httpsAgent: agent, timeout: 10000 });
         return true;
     } catch (e) { return false; }
@@ -164,7 +195,7 @@ async function processAccount(acc, idx) {
     const yesterday = moment.utc().subtract(1, 'day').format('YYYY-MM-DD');
     let logs = getLogs();
     
-    const id = acc.email || acc.deviceId;
+    const id = acc.email || acc.deviceId || acc.loginId;
     if (!logs[today]) logs[today] = {};
     if (!logs[today][id]) {
         logs[today][id] = { startBal: null, windows: {}, tokens: { G: 0, S: 0, D: 0, INT: 0 }, lastSync: null, lastClaimServer: null };
@@ -180,17 +211,23 @@ async function processAccount(acc, idx) {
         return;
     }
 
-    // 1. JWT Pre-Check
+    // 1. JWT Pre-Check & Auto-Refresh
     const exp = getJwtExp(acc.token);
     const nowTs = Math.floor(Date.now() / 1000);
     if (exp > 0 && nowTs > exp) {
-        currentStatus[id] = `${c.e}AUTH_EXP${c.rst}`;
-        displayAccount(acc, idx, accLog, prevLog);
-        return;
+        currentStatus[id] = `${c.w}REFRESHING...${c.rst}`;
+        const refreshed = await doRefreshToken(acc);
+        if (!refreshed) {
+            currentStatus[id] = `${c.e}AUTH_EXP${c.rst}`;
+            displayAccount(acc, idx, accLog, prevLog);
+            return;
+        } else {
+            currentStatus[id] = `${c.g}TOKEN_REFRESHED${c.rst}`;
+        }
     }
 
     // 2. Pulse Check
-    const hasProxy = !!acc.proxy;
+    const hasProxy = !!acc.proxy && acc.proxy.toUpperCase() !== 'NONE';
     const proxyIp = extractIp(acc.proxy);
     const isAlive = await pulseCheck(acc.proxy);
     
@@ -234,7 +271,10 @@ async function processAccount(acc, idx) {
     const isClaimNeeded = (forecasts[id] && now.isSameOrAfter(forecasts[id]));
     
     if (!isClaimNeeded) {
-        currentStatus[id] = `${c.gr}STEALTH MODE${c.rst}`;
+        // Fix applied here: Optional chaining (?) prevents crash if currentStatus[id] is undefined
+        if (!currentStatus[id]?.includes('REFRESHED')) {
+            currentStatus[id] = `${c.gr}STEALTH MODE${c.rst}`;
+        }
         displayAccount(acc, idx, accLog, prevLog);
         return;
     }
@@ -269,7 +309,7 @@ async function processAccount(acc, idx) {
 
 // --- DISPLAY LOGIC (THEME STRICTLY ADHERED) ---
 function displayAccount(acc, idx, accLog, prevLog) {
-    const id = acc.email || acc.deviceId;
+    const id = acc.email || acc.deviceId || acc.loginId;
     
     // Profit Calculation Fix (Strictly anchors to YST if available)
     const baseBal = prevLog ? prevLog.tokens.G : (accLog.startBal || accLog.tokens.G);
@@ -280,7 +320,7 @@ function displayAccount(acc, idx, accLog, prevLog) {
     
     // Line 1: Acc 1: username | id | Referral ID: referal_id
     const uName = acc.name || 'Unknown';
-    const lId = acc.loginId || 'N/A';
+    const lId = acc.loginId || acc.email || 'N/A';
     const rId = acc.referralId || 'N/A';
     console.log(`${c.cy}⫸ ${c.wh}${c.b}Acc ${idx + 1}:${c.rst} ${c.p}${uName}${c.rst} | ${c.wh}${lId}${c.rst} | ${c.s}Referral ID: ${rId}${c.rst}`);
     
@@ -338,7 +378,7 @@ async function main() {
 
     // Missed Window Check & Initialization
     accounts.forEach(acc => {
-        const id = acc.email || acc.deviceId;
+        const id = acc.email || acc.deviceId || acc.loginId;
         if (!forecasts[id]) {
             const now = moment.utc();
             const curWinStartHour = Math.floor(now.hour() / 4) * 4;
