@@ -16,17 +16,17 @@ const WINDOWS = [0, 4, 8, 12, 16, 20];
 
 // Advanced 256-Color Palette
 const c = {
-    p: '\x1b[38;5;39m',
-    s: '\x1b[38;5;198m',
-    a: '\x1b[38;5;118m',
-    w: '\x1b[38;5;220m',
-    e: '\x1b[38;5;196m',
-    g: '\x1b[38;5;46m',
-    wh: '\x1b[97m',
-    gr: '\x1b[38;5;245m',
-    cy: '\x1b[36m',
-    b: '\x1b[1m',
-    rst: '\x1b[0m'
+    p: '\x1b[38;5;39m',   // Primary Blue (For positive growth)
+    s: '\x1b[38;5;198m',  
+    a: '\x1b[38;5;118m',  
+    w: '\x1b[38;5;220m',  
+    e: '\x1b[38;5;196m',  // Error Red (For negative growth)
+    g: '\x1b[38;5;46m',   
+    wh: '\x1b[97m',       
+    gr: '\x1b[38;5;245m', 
+    cy: '\x1b[36m',       
+    b: '\x1b[1m',         
+    rst: '\x1b[0m'        
 };
 
 // Global State
@@ -35,7 +35,7 @@ let currentStatus = {};
 let proxyStatus = {};
 let sessionSynced = new Set();
 let isShuttingDown = false;
-let isWritingLogs = false; // Prevents concurrent write corruption
+let isWritingLogs = false; 
 let enableSpin = false;
 let lastSpinWindow = null;
 
@@ -67,7 +67,7 @@ const saveLogs = (l, force = false) => {
 // --- LOG TRIMMER (KEEPS 2 DAYS) ---
 function trimLogs() {
     let logs = getLogs();
-    const dates = Object.keys(logs).sort((a, b) => moment(b).diff(moment(a))); // Sort newest to oldest
+    const dates = Object.keys(logs).sort((a, b) => moment(b).diff(moment(a))); 
     
     let trimmed = false;
     if (dates.length > 2) {
@@ -183,7 +183,7 @@ async function processAccount(acc, idx) {
     const id = acc.email || acc.deviceId || acc.loginId;
     if (!logs[today]) logs[today] = {};
     if (!logs[today][id]) {
-        logs[today][id] = { startBal: null, windows: {}, tokens: { G: 0, S: 0, D: 0, INT: 0 }, lastSync: null, lastClaimServer: null };
+        logs[today][id] = { startBal: null, windows: {}, tokens: { G: 0, dailyRate: 0, dailyGrowth: 0, groupRate: 0, groupGrowth: 0 }, lastSync: null, lastClaimServer: null, spinProfit: 0 };
     }
     let accLog = logs[today][id];
     let prevLog = logs[yesterday]?.[id] || null;
@@ -191,11 +191,10 @@ async function processAccount(acc, idx) {
     if (acc.paused) {
         currentStatus[id] = `${c.e}PAUSED${c.rst}`;
         proxyStatus[id] = `${c.gr}N/A${c.rst}`;
-        displayAccount(acc, idx, accLog, prevLog);
+        displayAccount(acc, idx, accLog, prevLog, logs, today);
         return;
     }
 
-    // JWT Pre-Check & Auto-Refresh
     const exp = getJwtExp(acc.token);
     const nowTs = Math.floor(Date.now() / 1000);
     if (exp > 0 && nowTs > exp) {
@@ -203,14 +202,13 @@ async function processAccount(acc, idx) {
         const refreshed = await doRefreshToken(acc);
         if (!refreshed) {
             currentStatus[id] = `${c.e}AUTH_EXP${c.rst}`;
-            displayAccount(acc, idx, accLog, prevLog);
+            displayAccount(acc, idx, accLog, prevLog, logs, today);
             return;
         } else {
             currentStatus[id] = `${c.g}TOKEN_REFRESHED${c.rst}`;
         }
     }
 
-    // Pulse Check
     const hasProxy = !!acc.proxy && acc.proxy.toUpperCase() !== 'NONE';
     const proxyIp = extractIp(acc.proxy);
     const isAlive = await pulseCheck(acc.proxy);
@@ -218,7 +216,7 @@ async function processAccount(acc, idx) {
     if (!isAlive) {
         proxyStatus[id] = hasProxy ? `${c.e}${proxyIp} ● DEAD${c.rst}` : `${c.e}LOCAL_NET ● DEAD${c.rst}`;
         currentStatus[id] = `${c.e}CONN_FAIL${c.rst}`;
-        displayAccount(acc, idx, accLog, prevLog);
+        displayAccount(acc, idx, accLog, prevLog, logs, today);
         return;
     }
 
@@ -231,12 +229,16 @@ async function processAccount(acc, idx) {
         try {
             const balRes = await client.get('/token/get-token');
             const tData = balRes.data.data;
+            
+            // Extract core tokens and new rate data
             accLog.tokens = {
                 G: parseFloat(tData.interlinkGoldTokenAmount || 0),
-                S: parseFloat(tData.interlinkSilverTokenAmount || 0),
-                D: parseFloat(tData.interlinkDiamondTokenAmount || 0),
-                INT: parseFloat(tData.interlinkTokenAmount || 0)
+                dailyRate: parseFloat(tData.dailyMiningRate || 0),
+                dailyGrowth: parseFloat(tData.dailyMining7dGrowthRate || 0),
+                groupRate: parseFloat(tData.groupMiningRate || 0),
+                groupGrowth: parseFloat(tData.groupMining7dGrowthRate || 0)
             };
+            
             if (tData.lastClaimTime) accLog.lastClaimServer = moment(tData.lastClaimTime).format('YYYY-MM-DD HH:mm:ss');
             accLog.lastSync = moment().format('HH:mm:ss');
             if (accLog.startBal === null) accLog.startBal = prevLog ? prevLog.tokens.G : accLog.tokens.G;
@@ -246,6 +248,9 @@ async function processAccount(acc, idx) {
                 forecasts[id] = moment.utc(); 
             } else if (claimCheck.data?.data?.nextFrame) {
                 forecasts[id] = moment(claimCheck.data.data.nextFrame).add(Math.floor(Math.random() * 5), 'minutes'); 
+                // Manual Claim Startup Fix
+                if (!accLog.windows[winHour]) accLog.windows[winHour] = "DONE";
+                currentStatus[id] = `${c.a}ALREADY CLAIMED${c.rst}`;
             }
 
             sessionSynced.add(id);
@@ -255,13 +260,14 @@ async function processAccount(acc, idx) {
         }
     }
 
-    // API Execution
     const isClaimNeeded = (forecasts[id] && now.isSameOrAfter(forecasts[id]));
 
     if (!isClaimNeeded) {
-        // BUG FIX: Removed the "includes('REFRESHED')" check. Always goes to Stealth Mode now.
-        currentStatus[id] = `${c.gr}STEALTH MODE${c.rst}`;
-        displayAccount(acc, idx, accLog, prevLog);
+        // Keep it on ALREADY CLAIMED until the next window triggers
+        if (!currentStatus[id]?.includes('ALREADY CLAIMED')) {
+            currentStatus[id] = `${c.gr}STEALTH MODE${c.rst}`;
+        }
+        displayAccount(acc, idx, accLog, prevLog, logs, today);
         return;
     }
 
@@ -273,7 +279,13 @@ async function processAccount(acc, idx) {
 
             const postBal = await client.get('/token/get-token');
             const newTData = postBal.data.data;
+            
             accLog.tokens.G = parseFloat(newTData.interlinkGoldTokenAmount || 0);
+            accLog.tokens.dailyRate = parseFloat(newTData.dailyMiningRate || 0);
+            accLog.tokens.dailyGrowth = parseFloat(newTData.dailyMining7dGrowthRate || 0);
+            accLog.tokens.groupRate = parseFloat(newTData.groupMiningRate || 0);
+            accLog.tokens.groupGrowth = parseFloat(newTData.groupMining7dGrowthRate || 0);
+            
             if (newTData.lastClaimTime) accLog.lastClaimServer = moment(newTData.lastClaimTime).format('YYYY-MM-DD HH:mm:ss');
             currentStatus[id] = `${c.g}CLAIM SUCCESS${c.rst}`;
         } else {
@@ -289,45 +301,52 @@ async function processAccount(acc, idx) {
         else currentStatus[id] = `${c.e}API_DOWN${c.rst}`;
     }
 
-    displayAccount(acc, idx, accLog, prevLog);
+    displayAccount(acc, idx, accLog, prevLog, logs, today);
 }
 
 // --- DISPLAY LOGIC ---
-function displayAccount(acc, idx, accLog, prevLog) {
+function displayAccount(acc, idx, accLog, prevLog, logs, today) {
     const id = acc.email || acc.deviceId || acc.loginId;
-    const baseBal = prevLog ? prevLog.tokens.G : (accLog.startBal || accLog.tokens.G);
-    const dailyProfit = (accLog.tokens.G - baseBal).toFixed(2);
+    const baseBal = prevLog ? (prevLog.tokens.G || 0) : (accLog.startBal || accLog.tokens.G || 0);
+    const dailyProfit = ((accLog.tokens.G || 0) - baseBal).toFixed(2);
 
     const stat = currentStatus[id] || `${c.gr}WAITING${c.rst}`;
     const pStat = proxyStatus[id] || `${c.gr}CHECKING${c.rst}`;
 
     const uName = acc.name || 'Unknown';
     const lId = acc.loginId || acc.email || 'N/A';
-    const rId = acc.referralId || 'N/A';
-    console.log(`${c.cy}⫸ ${c.wh}${c.b}Acc ${idx + 1}:${c.rst} ${c.p}${uName}${c.rst} | ${c.wh}${lId}${c.rst} | ${c.s}Referral ID: ${rId}${c.rst}`);
-
+    
+    // Line 1: Header (Referral Removed, Last Claim Moved Here)
     let lastClaimStr = accLog.lastClaimServer ? moment(accLog.lastClaimServer, 'YYYY-MM-DD HH:mm:ss').format('HH:mm DD-MM-YY') : 'N/A';
-    console.log(`${c.cy}⸽ ${c.rst}Status: ${stat} | Last Claim: ${c.gr}${lastClaimStr}${c.rst}`);
+    console.log(`${c.cy}⫸ ${c.wh}${c.b}Acc ${idx + 1}:${c.rst} ${c.p}${uName}${c.rst} | ${c.wh}${lId}${c.rst} | ${c.s}Last Claim: ${lastClaimStr}${c.rst}`);
 
-    let gStr = `${c.g}${accLog.tokens.G.toFixed(2)}${c.rst}`;
-    let sStr = accLog.tokens.S > 0 ? `${c.wh}${accLog.tokens.S.toFixed(2)}${c.rst}` : `${c.gr}0.00${c.rst}`;
-    let dStr = accLog.tokens.D > 0 ? `${c.p}${accLog.tokens.D.toFixed(2)}${c.rst}` : `${c.gr}0.00${c.rst}`;
-    let intStr = accLog.tokens.INT > 0 ? `${c.g}${accLog.tokens.INT.toFixed(2)}${c.rst}` : `${c.gr}0.00${c.rst}`;
-    console.log(`${c.cy}⸽ ${c.rst}G: ${gStr} | S: ${sStr} | D: ${dStr} | INT: ${intStr}`);
+    // Line 2: Status
+    console.log(`${c.cy}⸽ Status: ${stat}${c.rst}`);
 
-    let ystStr = prevLog ? prevLog.tokens.G.toFixed(2) : '0.00';
-    let ystTime = prevLog?.lastSync || 'EOD';
-    console.log(`${c.cy}⸽ ${c.rst}Profit: ${c.g}+${dailyProfit}${c.rst} ${c.gr}(${accLog.lastSync || '--'})${c.rst} | YST: ${c.wh}${ystStr}${c.rst} ${c.gr}(${ystTime})${c.rst}`);
+    // Line 3: Coins & Colored Rates
+    let dColor = (accLog.tokens.dailyGrowth > 0) ? c.p : ((accLog.tokens.dailyGrowth < 0) ? c.e : c.wh);
+    let gColor = (accLog.tokens.groupGrowth > 0) ? c.p : ((accLog.tokens.groupGrowth < 0) ? c.e : c.wh);
+    console.log(`${c.cy}⸽ ${c.rst}Coins: ${c.w}${(accLog.tokens.G || 0).toFixed(2)}${c.rst} | Daily Rate: ${dColor}${(accLog.tokens.dailyRate || 0).toFixed(2)}${c.rst} | Group Rate: ${gColor}${(accLog.tokens.groupRate || 0).toFixed(2)}${c.rst}`);
 
+    // Line 4: Profit
+    let ystStr = prevLog ? (prevLog.tokens.G || 0).toFixed(2) : '0.00';
+    let syncTime = accLog.lastSync ? accLog.lastSync.substring(0, 5) : '--:--';
+    console.log(`${c.cy}⸽ ${c.rst}Profit: ${c.g}+${dailyProfit}${c.rst} ${c.gr}(${syncTime})${c.rst} | YST: ${c.wh}${ystStr}${c.rst} ${c.gr}(EOD)${c.rst}`);
+
+    // Line 5: Spin & Wallet
     let walletWord = (acc.wallet && acc.wallet !== 'None') ? `${c.g}Wallet${c.rst}` : `${c.gr}Wallet${c.rst}`;
-    let spinWord = acc.paused ? `${c.e}Spin${c.rst}` : (acc.miniToken ? `${c.g}Spin${c.rst}` : `${c.gr}Spin${c.rst}`);
-    console.log(`${c.cy}⸽ ${c.rst}${walletWord} | ${spinWord} | Proxy: ${pStat}`);
+    let spinWord = enableSpin ? `${c.g}Spin${c.rst}` : `${c.gr}Spin${c.rst}`;
+    let allTimeSpin = logs[today]?.[id]?.spinProfit || 0;
+    let spinPnLColor = allTimeSpin > 0 ? c.g : (allTimeSpin < 0 ? c.e : c.gr);
+    let spinPnLSign = allTimeSpin > 0 ? '+' : '';
+    console.log(`${c.cy}⸽ ${c.rst}${walletWord} | ${spinWord} (${spinPnLColor}${spinPnLSign}${allTimeSpin.toFixed(2)}${c.rst}) | Proxy: ${pStat}`);
 
-    const windowPairs = [[0,4], [8,12], [16,20]];
+    // Line 6 & 7: Windows Grid (3x2)
+    const windowTriplets = [[0, 4, 8], [12, 16, 20]];
     const now = moment.utc();
 
-    windowPairs.forEach(pair => {
-        const line = pair.map(h => {
+    windowTriplets.forEach(triplet => {
+        const line = triplet.map(h => {
             const k = h.toString().padStart(2, '0');
             const localWin = moment.utc().hour(h).minute(0).local().format('HH:mm');
             const s = accLog.windows[k];
@@ -341,10 +360,9 @@ function displayAccount(acc, idx, accLog, prevLog) {
         console.log(`${c.cy}⸽ ${c.rst}${line}`);
     });
 
-    const tM = forecasts[id] ? moment.duration(forecasts[id].diff(now)) : null;
-    const cdStr = (tM && tM.asSeconds() > 0) ? `${c.gr}(T-${tM.hours()}h ${tM.minutes()}m)${c.rst}` : `${c.g}(SYNC)${c.rst}`;
+    // Line 8: Next Claim
     const nextStr = forecasts[id] ? forecasts[id].local().format('HH:mm:ss') : "CALCULATING";
-    console.log(`${c.cy}⫹── ${c.rst}Next Claim: ${c.b}${c.wh}${nextStr}${c.rst} ${cdStr}\n`);
+    console.log(`${c.cy}⫹── ${c.rst}Next Claim: ${c.b}${c.wh}${nextStr}${c.rst}\n`);
 }
 
 // --- MASTER CONTROLLER SPIN LAUNCHER ---
@@ -353,7 +371,6 @@ function launchSpinScript() {
         console.clear();
         console.log(`\n${c.p}⫸${c.rst} ${c.b}HANDING OVER CONTROL TO SPIN.JS...${c.rst}\n`);
         
-        // FIX: Replaced raw string with path.join to prevent directory execution crashes
         const spinPath = path.join(__dirname, 'spin.js');
         const child = spawn('node', [spinPath], { stdio: 'inherit' });
         
@@ -394,7 +411,6 @@ async function main() {
     console.log(`         ${c.s}${c.b}INTERLINK MASTER CONTROLLER${c.rst}`);
     console.log(`${c.cy}=================================================${c.rst}`);
 
-    // LOG MANAGER TRIGGER
     const logsTrimmed = trimLogs();
     if (logsTrimmed) {
         console.log(`\n${c.g}✅ [Log Manager] Excess history removed. Keeping last 2 days.${c.rst}`);
@@ -408,7 +424,6 @@ async function main() {
     const { accounts, logs } = migrateData();
     const today = moment.utc().format('YYYY-MM-DD');
 
-    // SAFETY CATCH: Prevent script from crashing if accounts.json is empty or corrupt
     if (!Array.isArray(accounts) || accounts.length === 0) {
         console.log(`\n${c.e}No valid accounts found. Please check accounts.json.${c.rst}\n`);
         process.exit(1);
@@ -454,7 +469,6 @@ async function main() {
             console.log(`${c.cy}─${c.rst}`.repeat(60) + `\n`);
         }
 
-        // --- THE SPIN TRIGGER LOGIC ---
         if (enableSpin && !isShuttingDown) {
             const activeAccs = accounts.filter(a => !a.paused);
             const allClaimedForWindow = activeAccs.every(a => {
@@ -475,7 +489,6 @@ async function main() {
             }
         }
 
-        // Heartbeat Loop
         for (let i = 60; i > 0; i--) {
             if (isShuttingDown) break;
             process.stdout.write(`\r ${c.p}⫸${c.rst} HEARTBEAT: ${c.w}${i}s${c.rst} (Press Ctrl+C to safely exit)  `);
@@ -484,11 +497,10 @@ async function main() {
     }
 }
 
-// --- GRACEFUL SHUTDOWN ---
 process.on('SIGINT', () => {
     isShuttingDown = true;
     console.log(`\n\n${c.e}${c.b}>>> SHUTTING DOWN SAFELY... Saving logs.json... <<<${c.rst}\n`);
-    saveLogs(getLogs(), true); // Forced save during shutdown
+    saveLogs(getLogs(), true);
     process.exit(0);
 });
 
