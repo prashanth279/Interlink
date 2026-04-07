@@ -1,4 +1,4 @@
-# 🛰️ Interlink Farmer (Stealth Edition)
+# 🛰️ Interlink Bot(Stealth Edition)
 
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D16.0.0-brightgreen)](https://nodejs.org/)
 [![Platform](https://img.shields.io/badge/platform-Termux%20%7C%20Linux%20%7C%20Windows-blue)](https://github.com/prashanth279/interlink-farmer)
@@ -48,9 +48,9 @@ npm install
 node login.js
 ```
 * Step 2: Authenticate
-    Enter Credentials: Input your Login ID, Passcode, and Email when prompted.
-    Device Identity: The script generates and assigns a Unique Android Device ID to that specific account.
+    Enter Credentials: Input your Login ID, Passcode, and Email when prompted
     OTP Verification: Retrieve the OTP from your email and enter it to finalize the handshake.
+  (Note - if otp not arrived. At same time login into interlink with email otp verification method and enter that otp in the script.)
     Auto-Config: The script verifies the JWT and automatically updates accounts.json.
 * Step 3: Configure Proxies (Optional)
 Create a `proxies.txt` file in the root directory. Add your proxies (HTTP/SOCKS5) one per line. If missing, the script defaults to your local IP.
@@ -65,8 +65,9 @@ node mine.js
 
 | File | Purpose |
 | :--- | :--- |
-| `mine.js` | Main automation engine |
+| `index.js` | Main automation engine |
 | `login.js` | Login & OTP helper |
+| `spin.js` | experimental spin minigame automation|
 | `accounts.json` | [Auto-generated] Stores your session data |
 | `proxies.txt` | Your proxy list (one per line)|
 | `logs.json` | [Auto-generated] Daily gain tracking|
