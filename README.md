@@ -31,6 +31,17 @@ pkg install git
 # Clone the repository
 git clone https://github.com/prashanth279/interlink.git
 ```
+To make your script automatically start the moment you open the Termux app, you need to add a command to a hidden configuration file called .bashrc. Termux runs this file every single time it boots up.
+Here is the easiest way to do it:
+Step 1: Add the auto-start command
+Run this exact command in Termux (make sure you are in your home directory or the interlink folder):
+```
+echo "cd ~/interlink && node index.js" >> ~/.bashrc
+```
+```
+source ~/.bashrc
+```
+ignore this above steps if you don't want to
 ```
 cd interlink
 ```
