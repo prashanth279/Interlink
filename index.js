@@ -491,7 +491,7 @@ async function main() {
 
         for (let i = 60; i > 0; i--) {
             if (isShuttingDown) break;
-            process.stdout.write(`\r ${c.p}⫸${c.rst} HEARTBEAT: ${c.w}${i}s${c.rst} (Press Ctrl+C to safely exit)  `);
+            process.stdout.write(`\r ${c.p}⫸${c.rst} HEARTBEAT: ${c.w}${i}s${c.rst}`);
             await new Promise(r => setTimeout(r, 1000));
         }
     }
