@@ -14,7 +14,7 @@ const LOGS_JSON = path.join(__dirname, 'logs.json');
 const DEVICE_POOL = path.join(__dirname, 'devicepool.txt');
 const API_BASE = 'https://prod.interlinklabs.ai/api/v1';
 const WINDOWS = [0, 4, 8, 12, 16, 20];
-const APP_VERSION = '5.0.1'; // Vonossy's latest spoofed version
+const APP_VERSION = '5.0.1'; 
 
 // Advanced 256-Color Palette
 const c = {
@@ -84,7 +84,6 @@ function trimLogs() {
 function syncDevicePool(accounts) {
     let poolData = {};
     
-    // 1. Read existing pool if it exists
     if (fs.existsSync(DEVICE_POOL)) {
         const lines = fs.readFileSync(DEVICE_POOL, 'utf8').split('\n');
         lines.forEach(line => {
@@ -111,12 +110,10 @@ function syncDevicePool(accounts) {
     let poolModified = false;
     let accountsModified = false;
 
-    // 2. Sync logic
     accounts.forEach(acc => {
-        const idKey = acc.registeredEmail || acc.email || acc.loginId; // Use best identifier
+        const idKey = acc.registeredEmail || acc.email || acc.loginId; 
         let pData = poolData[idKey];
 
-        // If account isn't in pool AT ALL, create it
         if (!pData) {
             const randomDevice = defaultDevices[Math.floor(Math.random() * defaultDevices.length)];
             pData = {
@@ -127,13 +124,11 @@ function syncDevicePool(accounts) {
             poolData[idKey] = pData;
             poolModified = true;
         } 
-        // If in pool but missing DeviceID
         else if (!pData.deviceId || pData.deviceId === '') {
             pData.deviceId = acc.deviceId || crypto.randomBytes(8).toString('hex');
             poolModified = true;
         }
 
-        // 3. Override accounts.json with the Master Pool Data
         if (acc.deviceId !== pData.deviceId || acc.brand !== pData.brand || acc.model !== pData.model) {
             acc.deviceId = pData.deviceId;
             acc.brand = pData.brand;
@@ -142,7 +137,6 @@ function syncDevicePool(accounts) {
         }
     });
 
-    // 4. Save changes back to files
     if (poolModified) {
         let newPoolText = "# Format: email | Brand | Model | DeviceID (Leave DeviceID blank to auto-generate it once)\n";
         for (const [key, data] of Object.entries(poolData)) {
@@ -203,7 +197,7 @@ function createClient(acc, proxy) {
             'Version': APP_VERSION,
             'X-Platform': 'android',
             'X-System-Name': 'Android',
-            'X-Date': Date.now().toString(), // Dynamic Live Timestamp
+            'X-Date': Date.now().toString(), 
             'X-Brand': acc.brand || 'POCO',
             'X-Model': acc.model || '25053PC47G',
             'X-Unique-Id': acc.deviceId,
@@ -295,7 +289,7 @@ async function processAccount(acc, idx) {
     const client = createClient(acc, acc.proxy);
     const winHour = ([...WINDOWS].reverse().find(h => h <= now.hour()) || 0).toString().padStart(2, '0');
 
-    // Initial Balance & TRUE Server Sync (Optimized Master API)
+    // Initial Balance & TRUE Server Sync 
     if (!sessionSynced.has(id)) {
         try {
             const masterRes = await client.get('/auth/current-user-full?include=userInfo,token,isClaimable');
@@ -346,7 +340,6 @@ async function processAccount(acc, idx) {
                 currentStatus[id] = `${c.w}GROUP FOUND. JITTERING...${c.rst}`;
                 displayAccount(acc, idx, accLog, prevLog, logs, today);
                 
-                // Human Anti-Bot Jitter (15-45s)
                 const jitterMs = Math.floor(Math.random() * 30000) + 15000;
                 await new Promise(r => setTimeout(r, jitterMs));
 
@@ -356,18 +349,18 @@ async function processAccount(acc, idx) {
                 if ((cRes.data && cRes.data.success) || msg.includes('success')) {
                     accLog.groupClaimDate = today;
                     accLog.groupState = { name: bestGroup.groupId, reward: highestReward };
-                    accLog.tokens.G += highestReward; // Locally update balance
+                    accLog.tokens.G += highestReward; 
+                    accLog.lastSync = moment().format('HH:mm:ss'); // Update Sync Time on successful group claim
                     saveLogs(logs);
                 }
             } else {
-                // Checked today, no groups ready. Mark it so we don't spam the API again.
+                // Verified empty or already claimed manually
                 accLog.groupClaimDate = today;
                 accLog.groupState = null; 
                 saveLogs(logs);
             }
-        } catch(e) { /* Silently fail group mining to protect main loop */ }
+        } catch(e) { /* Silently fail to protect main loop */ }
     }
-
 
     const isClaimNeeded = (forecasts[id] && now.isSameOrAfter(forecasts[id]));
 
@@ -386,11 +379,14 @@ async function processAccount(acc, idx) {
             await client.post('/token/claim-airdrop', {});
             accLog.windows[winHour] = moment().format('HH:mm');
 
-            const postBal = await client.get('/token/get-token');
-            const newTData = postBal.data.data;
+            // Fetch live balance post-claim using optimized API
+            const postBal = await client.get('/auth/current-user-full?include=userInfo,token');
+            const newTData = postBal.data?.data?.token || {};
             
             accLog.tokens.G = parseFloat(newTData.interlinkGoldTokenAmount || 0);
             if (newTData.lastClaimTime) accLog.lastClaimServer = moment(newTData.lastClaimTime).format('YYYY-MM-DD HH:mm:ss');
+            
+            accLog.lastSync = moment().format('HH:mm:ss'); // Update Sync Time on successful airdrop claim
             currentStatus[id] = `${c.g}CLAIM SUCCESS${c.rst}`;
         } else {
             currentStatus[id] = `${c.a}WINDOW COMPLETE${c.rst}`;
@@ -427,10 +423,14 @@ function displayAccount(acc, idx, accLog, prevLog, logs, today) {
     // Line 2: Status
     console.log(`${c.cy}⸽ Status: ${stat}${c.rst}`);
 
-    // Line 3: Coins & Group (Redesigned)
-    let groupStr = `${c.gr}Pending / None${c.rst}`;
-    if (accLog.groupClaimDate === today && accLog.groupState) {
-        groupStr = `${c.g}${accLog.groupState.name} (+${accLog.groupState.reward})${c.rst}`;
+    // Line 3: Coins & Group (Redesigned with 3 states)
+    let groupStr = `${c.gr}Pending / Checking...${c.rst}`;
+    if (accLog.groupClaimDate === today) {
+        if (accLog.groupState) {
+            groupStr = `${c.g}${accLog.groupState.name} (+${accLog.groupState.reward})${c.rst}`;
+        } else {
+            groupStr = `${c.w}Already Claimed / None${c.rst}`; // Manual or empty group handler
+        }
     }
     console.log(`${c.cy}⸽ ${c.rst}Coins: ${c.w}${(accLog.tokens.G || 0).toFixed(2)}${c.rst} | Group: ${groupStr}`);
 
@@ -515,10 +515,7 @@ async function interruptibleSleep(ms, logIntervalMs = 0) {
     for (let i = 0; i < steps; i++) {
         if (isShuttingDown) return; 
         
-        // Midnight Log Trimmer
-        if (moment().format('HH:mm:ss') === '00:00:01') {
-            trimLogs();
-        }
+        if (moment().format('HH:mm:ss') === '00:00:01') trimLogs();
 
         await new Promise(r => setTimeout(r, 1000));
         
@@ -548,9 +545,8 @@ async function main() {
         console.log(`\n${c.g}✅ [Log Manager] Excess history removed.${c.rst}`);
     }
 
-    // Sync Devices BEFORE we do anything
     syncDevicePool(accounts);
-    accounts = migrateData().accounts; // Reload fresh injected accounts
+    accounts = migrateData().accounts; 
 
     enableSpin = await askSpinPrompt();
     if (enableSpin) console.log(`\n${c.g}✅ Lucky Spin Automation Enabled.${c.rst}\n`);
@@ -602,7 +598,6 @@ async function main() {
             await processAccount(accounts[i], i);
             console.log(`${c.cy}─${c.rst}`.repeat(60) + `\n`);
             
-            // The Inter-Account Jitter (3 to 8 seconds) to prevent API spam flags
             if (i < accounts.length - 1 && !isShuttingDown) {
                 const interJitter = Math.floor(Math.random() * 5000) + 3000;
                 await new Promise(r => setTimeout(r, interJitter));
@@ -613,7 +608,6 @@ async function main() {
 
         const activeAccs = accounts.filter(a => !a.paused);
         
-        // Check if Spin is needed
         const allClaimedForWindow = activeAccs.every(a => {
             const aId = a.registeredEmail || a.email || a.deviceId || a.loginId;
             return getLogs()[today]?.[aId]?.windows?.[winHourKey] === "DONE" || getLogs()[today]?.[aId]?.windows?.[winHourKey] !== undefined;
@@ -629,7 +623,6 @@ async function main() {
             continue; 
         }
 
-        // SMART SLEEP EVALUATION
         let allAccountsDone = true;
         let earliestNextFrame = null;
 
@@ -652,7 +645,7 @@ async function main() {
             console.log(`${c.p}⫸${c.rst} ${c.b}ALL ACCOUNTS CLAIMED SECURELY.${c.rst}`);
             console.log(`${c.gr}>> Activating PM2 Deep Sleep until ${c.w}${nextTimeStr}${c.rst}\n`);
             
-            await interruptibleSleep(waitMs, 600000); // Pulse every 10 mins
+            await interruptibleSleep(waitMs, 600000); 
             
         } else {
             const retryDelayMs = Math.floor(Math.random() * 60000) + 60000; 
