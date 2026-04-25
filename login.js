@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const readline = require('readline');
 const https = require('https');
 
-const c = { cy: '\x1b[36m', m: '\x1b[35m', y: '\x1b[33m', g: '\x1b[32m', r: '\x1b[31m', w: '\x1b[37m', gr: '\x1b[90m', b: '\x1b[1m', rst: '\x1b[0m' };
+const c = { cy: '\x1b[36m', m: '\x1b[35m', y: '\x1b[33m', g: '\x1b[32m', r: '\x1b[31m', w: '\x1b[37m', gr: '\x1b[90m', b: '\x1b[1m', rst: '\x1b[0m', wh: '\x1b[97m' };
 
 function setupEnvironment() {
     const pkgs = ['axios', 'moment', 'https-proxy-agent', 'socks-proxy-agent'];
@@ -17,6 +17,7 @@ function setupEnvironment() {
     });
     if (!fs.existsSync(path.join(__dirname, 'accounts.json'))) fs.writeFileSync(path.join(__dirname, 'accounts.json'), '[]');
     if (!fs.existsSync(path.join(__dirname, 'logs.json'))) fs.writeFileSync(path.join(__dirname, 'logs.json'), '{}');
+    if (!fs.existsSync(path.join(__dirname, 'devicepool.txt'))) fs.writeFileSync(path.join(__dirname, 'devicepool.txt'), '# Format: email | Brand | Model | DeviceID\n');
 }
 setupEnvironment();
 
@@ -26,36 +27,85 @@ const { HttpsProxyAgent } = require('https-proxy-agent');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 
 // --- APP CONFIGURATION ---
-const APP_VERSION = '1.1.8'; 
+const APP_VERSION = '5.0.1'; 
 const API_BASE_URL = 'https://prod.interlinklabs.ai/api/v1';
 const MINI_API_URL = 'https://interlink-mini-app.interlinklabs.ai/api';
 const ACCOUNTS_JSON = path.join(__dirname, 'accounts.json');
+const DEVICE_POOL = path.join(__dirname, 'devicepool.txt');
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const prompt = (q) => new Promise((res) => rl.question(`${c.cy}⸽ ${c.w}${q}${c.rst}`, (a) => res(a.trim())));
 
-const MODELS = [{ brand: 'XiaoMi', model: 'Redmi Note 8 Pro' }, { brand: 'Samsung', model: 'Galaxy S21 Ultra' }, { brand: 'Google', model: 'Pixel 6' }];
+const MODELS = [
+    { brand: 'POCO', model: '25053PC47G' }, 
+    { brand: 'Samsung', model: 'Galaxy S24 Ultra' }, 
+    { brand: 'Google', model: 'Pixel 8 Pro' }, 
+    { brand: 'XiaoMi', model: 'Redmi Note 13' }
+];
 
 function getAgent(proxy) {
     if (!proxy || proxy.toUpperCase() === 'NONE') return new https.Agent({ rejectUnauthorized: false });
     return proxy.startsWith('socks') ? new SocksProxyAgent(proxy) : new HttpsProxyAgent(proxy);
 }
 
-// --- CORE LOGIN LOGIC (WITH BYPASS) ---
+function getHeaders(acc) {
+    return {
+        'Version': APP_VERSION,
+        'X-Platform': 'android',
+        'X-System-Name': 'Android',
+        'X-Date': Date.now().toString(),
+        'X-Brand': acc.brand || 'POCO',
+        'X-Model': acc.model || '25053PC47G',
+        'X-Unique-Id': acc.deviceId,
+        'X-Device-Id': acc.deviceId,
+        'X-Bundle-Id': 'org.ai.interlinklabs.interlinkId',
+        'Accept-Encoding': 'gzip, deflate',
+        'User-Agent': 'okhttp/4.12.0',
+        'Content-Type': 'application/json'
+    };
+}
+
+// --- DEVICE POOL MANAGER ---
+function appendToDevicePool(email, brand, model, deviceId) {
+    const idKey = email;
+    let poolText = fs.readFileSync(DEVICE_POOL, 'utf8');
+    if (!poolText.includes(idKey)) {
+        fs.appendFileSync(DEVICE_POOL, `${idKey} | ${brand} | ${model} | ${deviceId}\n`);
+    }
+}
+
+// --- CORE LOGIN LOGIC (V2 SECURED) ---
 async function performLogin(targetAcc = null) {
     console.log(`\n${c.m}◢◤ ${c.cy}AUTH_PROTOCOL_INITIATED (v${APP_VERSION}) ${c.m}◥◣${c.rst}`);
-    const loginId = await prompt('LOGIN ID: ');
-    const passcode = await prompt('PASSCODE: ');
-    const email = await prompt('EMAIL: ');
-    const proxy = await prompt('PROXY (optional, leave blank for None): ');
+    
+    let loginId, passcode, email, proxy, deviceId, identity;
 
-    const deviceId = targetAcc ? targetAcc.deviceId : crypto.randomBytes(8).toString('hex');
-    const identity = targetAcc ? { brand: targetAcc.brand, model: targetAcc.model } : MODELS[Math.floor(Math.random() * MODELS.length)];
+    if (targetAcc) {
+        console.log(`${c.g}⸽ Auto-loading credentials for: ${targetAcc.name || targetAcc.registeredEmail}${c.rst}`);
+        loginId = targetAcc.loginId;
+        passcode = targetAcc.passcode;
+        email = targetAcc.registeredEmail || targetAcc.email;
+        proxy = targetAcc.proxy;
+        deviceId = targetAcc.deviceId;
+        identity = { brand: targetAcc.brand, model: targetAcc.model };
+    } else {
+        loginId = await prompt('LOGIN ID: ');
+        passcode = await prompt('PASSCODE: ');
+        email = await prompt('EMAIL: ');
+        proxy = await prompt('PROXY (optional, leave blank for None): ');
+        deviceId = crypto.randomBytes(8).toString('hex');
+        identity = MODELS[Math.floor(Math.random() * MODELS.length)];
+        
+        // Save new footprint to Device Pool instantly
+        appendToDevicePool(email, identity.brand, identity.model, deviceId);
+    }
+
     const agent = getAgent(proxy);
+    const tempAcc = { deviceId, brand: identity.brand, model: identity.model };
 
     const client = axios.create({
         baseURL: API_BASE_URL,
-        headers: { 'User-Agent': 'okhttp/4.12.0', 'x-unique-id': deviceId, 'version': APP_VERSION },
+        headers: getHeaders(tempAcc),
         httpsAgent: agent
     });
 
@@ -66,26 +116,20 @@ async function performLogin(targetAcc = null) {
         console.log(`${c.gr}⸽ Verifying Passcode...${c.rst}`);
         await client.post('/auth/check-passcode', { loginId, passcode, deviceId });
         
-        console.log(`${c.gr}⸽ Requesting Auto-OTP...${c.rst}`);
-        try {
-            await client.post('/auth/send-otp-email-verify-login', { loginId, passcode, email, deviceId });
-            console.log(`${c.g}⫸ OTP_SENT_TO_EMAIL${c.rst}`);
-        } catch (otpErr) {
-            console.log(`${c.y}⚠ Auto-OTP Blocked (${otpErr.response?.status || 'Error'}). Generate OTP via the official app and enter it below.${c.rst}`);
-        }
+        console.log(`${c.gr}⸽ Requesting OTP...${c.rst}`);
+        await client.post('/auth/send-otp-email-verify-login', { loginId, passcode, email, deviceId });
+        console.log(`${c.g}⫸ OTP SENT TO EMAIL!${c.rst}`);
 
         const otp = await prompt('ENTER OTP: ');
         
-        console.log(`${c.gr}⸽ Verifying OTP (Stealth Bypass Mode)...${c.rst}`);
+        console.log(`${c.gr}⸽ Verifying OTP (v2 Security Handshake)...${c.rst}`);
         
-        // THE BYPASS: Fresh request, NO deviceId in payload, NO x-unique-id in headers
-        const verifyRes = await axios.post(`${API_BASE_URL}/auth/check-otp-email-verify-login`, 
-            { loginId, otp }, 
-            {
-                headers: { 'User-Agent': 'okhttp/4.12.0', 'version': APP_VERSION },
-                httpsAgent: agent
-            }
-        );
+        // V2 Patched: Strict Headers + deviceId injected into payload
+        const verifyRes = await client.post(`/auth/check-otp-email-verify-login?v=2`, { 
+            loginId, 
+            otp,
+            deviceId 
+        });
 
         // Fetch Both Tokens
         const token = verifyRes.data?.data?.accessToken || verifyRes.data?.data?.jwtToken;
@@ -94,23 +138,18 @@ async function performLogin(targetAcc = null) {
         if (token) {
             console.log(`${c.g}✅ AUTHENTICATED SUCCESSFULLY${c.rst}`);
             
-            // Create a temporary account object to pass into Profile Sync
             let newAcc = { 
                 name: loginId, loginId, registeredEmail: email, passcode, 
                 token, refreshToken, deviceId, proxy: proxy || 'NONE', paused: false, ...identity 
             };
             
-            // Run instant profile sync to grab wallet, balances, and mini token
             newAcc = await syncProfile(newAcc);
             saveAccount(newAcc);
             
             await prompt('\nPress Enter to return to menu...');
         }
     } catch (e) {
-        console.log(`\n${c.r}❌ AUTH_FAILED: ${e.message}${c.rst}`);
-        if (e.response && e.response.data) {
-            console.log(`${c.gr}${JSON.stringify(e.response.data, null, 2)}${c.rst}`);
-        }
+        console.log(`\n${c.r}❌ AUTH_FAILED: ${e.response?.data?.message || e.message}${c.rst}`);
         await prompt('\nPress Enter to return to menu...');
     }
 }
@@ -120,12 +159,12 @@ async function syncProfile(acc) {
     const agent = getAgent(acc.proxy);
     const client = axios.create({
         baseURL: API_BASE_URL,
-        headers: { 'Authorization': `Bearer ${acc.token}`, 'User-Agent': 'okhttp/4.12.0', 'x-unique-id': acc.deviceId, 'version': APP_VERSION },
+        headers: { ...getHeaders(acc), 'Authorization': `Bearer ${acc.token}` },
         httpsAgent: agent, timeout: 15000
     });
 
     try {
-        console.log(`${c.cy}⸽ Fetching Profile Data for ${c.w}${acc.name || acc.email || acc.deviceId}${c.rst}...`);
+        console.log(`${c.cy}⸽ Fetching Profile Data for ${c.w}${acc.name || acc.registeredEmail || acc.deviceId}${c.rst}...`);
         
         const userRes = await client.get('/auth/current-user');
         const userData = userRes.data?.data || {};
@@ -182,18 +221,24 @@ async function main() {
 
         if (accounts.length > 0) {
             accounts.forEach((a, i) => {
-                const s = a.miniToken ? `${c.g}YES${c.rst}` : `${c.r}NO${c.rst}`;
-                const p = a.paused ? `${c.r}YES${c.rst}` : `${c.g}NO${c.rst}`;
-                console.log(`${c.cy}⫸ ${c.w}${i+1}. ${a.name?.padEnd(12) || 'Unknown'.padEnd(12)}${c.rst} | SPN: ${s} | PAUSED: ${p}`);
+                const status = a.paused ? `${c.r}[PAUSED]${c.rst}` : `${c.wh}[WORKING]${c.rst}`;
+                console.log(`${c.cy}⫸ ${c.w}${i+1}. ${a.name?.padEnd(12) || 'Unknown'.padEnd(12)}${c.rst} | ${status}`);
             });
         } else { console.log(`${c.gr}⸽ NO_ACCOUNTS_FOUND${c.rst}`); }
 
-        console.log(`\n${c.cy}⫹── ${c.b}${c.w}1. ADD/FIX | 2. REMOVE | 3. UPDATE PROFILES | 4. TOGGLE PAUSE | 5. START BOT${c.rst} ──⫺`);
+        console.log(`\n${c.cy}⫹── ${c.b}${c.w}1. ADD / FIX | 2. REMOVE | 3. UPDATE PROFILES | 4. TOGGLE PAUSE | 5. START INDEX.JS${c.rst} ──⫺`);
         const choice = await prompt('ACTION: ');
         
         if (choice === '1') {
-            const id = await prompt('SELECT NUMBER TO OVERWRITE (OR BLANK FOR NEW): ');
-            await performLogin(id ? accounts[id-1] : null);
+            const id = await prompt('SELECT NUMBER TO FIX (OR LEAVE BLANK FOR NEW ACCOUNT): ');
+            if (id.trim() === '') {
+                await performLogin(null);
+            } else if (accounts[id-1]) {
+                await performLogin(accounts[id-1]);
+            } else {
+                console.log(`${c.r}❌ Invalid selection.${c.rst}`);
+                await new Promise(r => setTimeout(r, 1000));
+            }
         } else if (choice === '2') {
             const id = await prompt('SELECT NUMBER TO REMOVE: ');
             if (accounts[id-1]) {
@@ -223,12 +268,11 @@ async function main() {
             console.clear();
             console.log(`${c.g}🚀 LAUNCHING INDEX.JS...${c.rst}\n`);
             
-            // Seamlessly hands over the terminal to index.js
             const child = spawn('node', ['index.js'], { stdio: 'inherit' });
             child.on('close', (code) => {
                 process.exit(code);
             });
-            break; // Exits the menu loop
+            break; 
         }
     }
 }
