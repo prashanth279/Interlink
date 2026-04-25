@@ -18,17 +18,18 @@ const APP_VERSION = '5.0.1';
 
 // Advanced 256-Color Palette
 const c = {
-    p: '\x1b[38;5;39m',   
-    s: '\x1b[38;5;198m',  
-    a: '\x1b[38;5;118m',  
-    w: '\x1b[38;5;220m',  
-    e: '\x1b[38;5;196m',  
-    g: '\x1b[38;5;46m',   
-    wh: '\x1b[97m',       
-    gr: '\x1b[38;5;245m', 
-    cy: '\x1b[36m',       
-    b: '\x1b[1m',         
-    rst: '\x1b[0m'        
+    p: '\x1b[38;5;39m',   // Blue
+    s: '\x1b[38;5;198m',  // Pink
+    a: '\x1b[38;5;118m',  // Light Green
+    w: '\x1b[38;5;220m',  // Yellow
+    e: '\x1b[38;5;196m',  // Red
+    g: '\x1b[38;5;46m',   // Green
+    wh: '\x1b[97m',       // White
+    gr: '\x1b[38;5;245m', // Grey
+    cy: '\x1b[36m',       // Cyan
+    m: '\x1b[38;5;207m',  // Magenta (For Coins)
+    b: '\x1b[1m',         // Bold
+    rst: '\x1b[0m'        // Reset
 };
 
 // Global State
@@ -289,7 +290,7 @@ async function processAccount(acc, idx) {
     const client = createClient(acc, acc.proxy);
     const winHour = ([...WINDOWS].reverse().find(h => h <= now.hour()) || 0).toString().padStart(2, '0');
 
-    // Initial Balance & TRUE Server Sync 
+    // Initial Balance & TRUE Server Sync (Optimized Master API)
     if (!sessionSynced.has(id)) {
         try {
             const masterRes = await client.get('/auth/current-user-full?include=userInfo,token,isClaimable');
@@ -299,7 +300,7 @@ async function processAccount(acc, idx) {
             accLog.tokens.G = parseFloat(tData.interlinkGoldTokenAmount || 0);
             
             if (tData.lastClaimTime) accLog.lastClaimServer = moment(tData.lastClaimTime).format('YYYY-MM-DD HH:mm:ss');
-            accLog.lastSync = moment().format('HH:mm:ss');
+            accLog.lastSync = moment().format('HH:mm'); // Sync Time
             if (accLog.startBal === null) accLog.startBal = prevLog ? prevLog.tokens.G : accLog.tokens.G;
 
             const isClaimable = uData.isClaimable?.isClaimable;
@@ -321,7 +322,8 @@ async function processAccount(acc, idx) {
     }
 
     // --- SMART GROUP MINING ENGINE ---
-    if (accLog.groupClaimDate !== today) {
+    // Executes safely during or after the 09:30 IST window (04:00 UTC)
+    if (accLog.groupClaimDate !== today && parseInt(winHour) >= 4) {
         try {
             const gRes = await client.post('/group-mining/get-list-group-mining', {});
             const groups = gRes.data?.data?.groups || [];
@@ -349,17 +351,19 @@ async function processAccount(acc, idx) {
                 if ((cRes.data && cRes.data.success) || msg.includes('success')) {
                     accLog.groupClaimDate = today;
                     accLog.groupState = { name: bestGroup.groupId, reward: highestReward };
-                    accLog.tokens.G += highestReward; 
-                    accLog.lastSync = moment().format('HH:mm:ss'); // Update Sync Time on successful group claim
+                    
+                    // Fetch accurate balance instantly
+                    const fastBal = await client.get('/token/get-token');
+                    accLog.tokens.G = parseFloat(fastBal.data?.data?.interlinkGoldTokenAmount || accLog.tokens.G);
+                    accLog.lastSync = moment().format('HH:mm'); 
                     saveLogs(logs);
                 }
             } else {
-                // Verified empty or already claimed manually
                 accLog.groupClaimDate = today;
-                accLog.groupState = null; 
+                accLog.groupState = null; // Found nothing or manually claimed
                 saveLogs(logs);
             }
-        } catch(e) { /* Silently fail to protect main loop */ }
+        } catch(e) { /* Silently fail group mining to protect main loop */ }
     }
 
     const isClaimNeeded = (forecasts[id] && now.isSameOrAfter(forecasts[id]));
@@ -379,14 +383,14 @@ async function processAccount(acc, idx) {
             await client.post('/token/claim-airdrop', {});
             accLog.windows[winHour] = moment().format('HH:mm');
 
-            // Fetch live balance post-claim using optimized API
-            const postBal = await client.get('/auth/current-user-full?include=userInfo,token');
-            const newTData = postBal.data?.data?.token || {};
+            // Lightweight fast-fetch for exact timestamp and balance
+            const postBal = await client.get('/token/get-token');
+            const newTData = postBal.data?.data || {};
             
             accLog.tokens.G = parseFloat(newTData.interlinkGoldTokenAmount || 0);
             if (newTData.lastClaimTime) accLog.lastClaimServer = moment(newTData.lastClaimTime).format('YYYY-MM-DD HH:mm:ss');
             
-            accLog.lastSync = moment().format('HH:mm:ss'); // Update Sync Time on successful airdrop claim
+            accLog.lastSync = moment().format('HH:mm'); 
             currentStatus[id] = `${c.g}CLAIM SUCCESS${c.rst}`;
         } else {
             currentStatus[id] = `${c.a}WINDOW COMPLETE${c.rst}`;
@@ -416,28 +420,28 @@ function displayAccount(acc, idx, accLog, prevLog, logs, today) {
     const uName = acc.name || 'Unknown';
     const lId = acc.loginId || acc.email || 'N/A';
     
-    // Line 1: Header
-    let lastClaimStr = accLog.lastClaimServer ? moment(accLog.lastClaimServer, 'YYYY-MM-DD HH:mm:ss').format('HH:mm DD-MM-YY') : 'N/A';
-    console.log(`${c.cy}⫸ ${c.wh}${c.b}Acc ${idx + 1}:${c.rst} ${c.p}${uName}${c.rst} | ${c.wh}${lId}${c.rst} | ${c.s}Last Claim: ${lastClaimStr}${c.rst}`);
+    // Line 1: Header (Blue Time)
+    let lastClaimStr = accLog.lastClaimServer ? moment(accLog.lastClaimServer, 'YYYY-MM-DD HH:mm:ss').format('HH:mm') : 'N/A';
+    console.log(`${c.cy}⫸ ${c.wh}${c.b}Acc ${idx + 1}:${c.rst} ${c.p}${uName}${c.rst} | ${c.wh}${lId}${c.rst} | ${c.s}Last Claim: ${c.p}${lastClaimStr}${c.rst}`);
 
     // Line 2: Status
     console.log(`${c.cy}⸽ Status: ${stat}${c.rst}`);
 
-    // Line 3: Coins & Group (Redesigned with 3 states)
+    // Line 3: Magenta Coins & Group UI
     let groupStr = `${c.gr}Pending / Checking...${c.rst}`;
     if (accLog.groupClaimDate === today) {
         if (accLog.groupState) {
             groupStr = `${c.g}${accLog.groupState.name} (+${accLog.groupState.reward})${c.rst}`;
         } else {
-            groupStr = `${c.w}Already Claimed / None${c.rst}`; // Manual or empty group handler
+            groupStr = `${c.w}Manually Claimed${c.rst}`; 
         }
     }
-    console.log(`${c.cy}⸽ ${c.rst}Coins: ${c.w}${(accLog.tokens.G || 0).toFixed(2)}${c.rst} | Group: ${groupStr}`);
+    console.log(`${c.cy}⸽ ${c.rst}Coins: ${c.m}${(accLog.tokens.G || 0).toFixed(2)}${c.rst} | Group: ${groupStr}`);
 
-    // Line 4: Profit
+    // Line 4: Profit (Removed EOD text)
     let ystStr = prevLog ? (prevLog.tokens.G || 0).toFixed(2) : '0.00';
-    let syncTime = accLog.lastSync ? accLog.lastSync.substring(0, 5) : '--:--';
-    console.log(`${c.cy}⸽ ${c.rst}Profit: ${c.g}+${dailyProfit}${c.rst} ${c.gr}(${syncTime})${c.rst} | YST: ${c.wh}${ystStr}${c.rst} ${c.gr}(EOD)${c.rst}`);
+    let syncTime = accLog.lastSync ? accLog.lastSync : '--:--';
+    console.log(`${c.cy}⸽ ${c.rst}Profit: ${c.g}+${dailyProfit}${c.rst} ${c.gr}(${syncTime})${c.rst} | YST: ${c.wh}${ystStr}${c.rst}`);
 
     // Line 5: Spin & Wallet
     let walletWord = (acc.wallet && acc.wallet !== 'None') ? `${c.g}Wallet${c.rst}` : `${c.gr}Wallet${c.rst}`;
@@ -598,6 +602,7 @@ async function main() {
             await processAccount(accounts[i], i);
             console.log(`${c.cy}─${c.rst}`.repeat(60) + `\n`);
             
+            // Inter-Account Jitter (3-8 seconds)
             if (i < accounts.length - 1 && !isShuttingDown) {
                 const interJitter = Math.floor(Math.random() * 5000) + 3000;
                 await new Promise(r => setTimeout(r, interJitter));
