@@ -419,6 +419,7 @@ function displayAccount(acc, idx, accLog, prevLog, logs, today) {
 
     const uName = acc.name || 'Unknown';
     const lId = acc.loginId || acc.email || 'N/A';
+    const nextClaimTarget = forecasts[id] ? forecasts[id].local().format('HH:mm') : "--:--";
     
     // Line 1: Header (Blue Time)
     let lastClaimStr = accLog.lastClaimServer ? moment(accLog.lastClaimServer, 'YYYY-MM-DD HH:mm:ss').format('HH:mm') : 'N/A';
@@ -428,7 +429,7 @@ function displayAccount(acc, idx, accLog, prevLog, logs, today) {
     console.log(`${c.cy}⸽ Status: ${stat}${c.rst}`);
 
     // Line 3: Magenta Coins & Group UI
-    let groupStr = `${c.gr}Pending / Checking...${c.rst}`;
+    let groupStr = `${c.gr}Waiting till ${nextClaimTarget}${c.rst}`;
     if (accLog.groupClaimDate === today) {
         if (accLog.groupState) {
             groupStr = `${c.g}${accLog.groupState.name} (+${accLog.groupState.reward})${c.rst}`;
@@ -471,8 +472,7 @@ function displayAccount(acc, idx, accLog, prevLog, logs, today) {
     });
 
     // Line 8: Next Claim
-    const nextStr = forecasts[id] ? forecasts[id].local().format('HH:mm:ss') : "CALCULATING";
-    console.log(`${c.cy}⫹── ${c.rst}Next Claim: ${c.b}${c.wh}${nextStr}${c.rst}\n`);
+    console.log(`${c.cy}⫹── ${c.rst}Next Claim: ${c.b}${c.wh}${nextClaimTarget}${c.rst}\n`);
 }
 
 function launchSpinScript() {
@@ -528,8 +528,8 @@ async function interruptibleSleep(ms, logIntervalMs = 0) {
             if (nextLog <= 0) {
                 const dur = moment.duration((steps - i) * 1000);
                 const h = Math.floor(dur.asHours());
-                const m = dur.minutes();
-                console.log(`${c.cy}⸽${c.rst} STATUS: PM2 Deep Sleep Active. Next claim in ${c.w}${h}h ${m}m${c.rst}...`);
+                const m = dur.minutes().toString().padStart(2, '0');
+                console.log(`${c.cy}⸽${c.rst} Remaining : ${h}:${m} Hrs`);
                 nextLog = logIntervalMs;
             }
         }
@@ -645,10 +645,9 @@ async function main() {
 
         if (allAccountsDone && earliestNextFrame) {
             const waitMs = earliestNextFrame.diff(moment.utc());
-            const nextTimeStr = earliestNextFrame.local().format('HH:mm:ss');
+            const nextTimeStr = earliestNextFrame.local().format('HH:mm');
             
-            console.log(`${c.p}⫸${c.rst} ${c.b}ALL ACCOUNTS CLAIMED SECURELY.${c.rst}`);
-            console.log(`${c.gr}>> Activating PM2 Deep Sleep until ${c.w}${nextTimeStr}${c.rst}\n`);
+            console.log(`\n${c.p}⫸${c.rst} ${c.b}Deep Sleep Till ${nextTimeStr}${c.rst}\n`);
             
             await interruptibleSleep(waitMs, 600000); 
             
