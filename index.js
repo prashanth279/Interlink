@@ -14,7 +14,7 @@ const LOGS_JSON = path.join(__dirname, 'logs.json');
 const DEVICE_POOL = path.join(__dirname, 'devicepool.txt');
 const API_BASE = 'https://prod.interlinklabs.ai/api/v1';
 const WINDOWS = [0, 4, 8, 12, 16, 20];
-const APP_VERSION = '5.0.1'; 
+const APP_VERSION = '5.0.2'; 
 
 // Advanced 256-Color Palette
 const c = {
@@ -232,24 +232,31 @@ async function doRefreshToken(acc) {
 }
 
 async function pulseCheck(proxyUrl) {
+    const agent = (proxyUrl && proxyUrl.toUpperCase() !== 'NONE') ? (proxyUrl.startsWith('socks') ? new SocksProxyAgent(proxyUrl.trim()) : new HttpsProxyAgent(proxyUrl.trim())) : null;
     try {
-        const agent = (proxyUrl && proxyUrl.toUpperCase() !== 'NONE') ? (proxyUrl.startsWith('socks') ? new SocksProxyAgent(proxyUrl.trim()) : new HttpsProxyAgent(proxyUrl.trim())) : null;
         await axios.get('https://api.ipify.org?format=json', { httpsAgent: agent, timeout: 10000 });
         return true;
-    } catch (e) { return false; }
+    } catch (e) { 
+        // Fallback network check if ipify is down
+        try {
+            await axios.get('https://icanhazip.com', { httpsAgent: agent, timeout: 10000 });
+            return true;
+        } catch (e2) {
+            return false; 
+        }
+    }
 }
 
 // --- ACCOUNT PROCESSING ---
 async function processAccount(acc, idx) {
-    const now = moment.utc();
-    const today = now.format('YYYY-MM-DD');
+    const today = moment.utc().format('YYYY-MM-DD');
     const yesterday = moment.utc().subtract(1, 'day').format('YYYY-MM-DD');
     let logs = getLogs();
 
     const id = acc.registeredEmail || acc.email || acc.deviceId || acc.loginId;
     if (!logs[today]) logs[today] = {};
     if (!logs[today][id]) {
-        logs[today][id] = { startBal: null, windows: {}, tokens: { G: 0 }, lastSync: null, lastClaimServer: null, spinProfit: 0, groupClaimDate: null, groupState: null };
+        logs[today][id] = { startBal: null, windows: {}, tokens: { G: 0 }, lastSync: null, lastClaimServer: null, spinProfit: 0, groupClaimDate: null, groupState: null, curatorSyncDate: null };
     }
     let accLog = logs[today][id];
     let prevLog = logs[yesterday]?.[id] || null;
@@ -288,7 +295,7 @@ async function processAccount(acc, idx) {
 
     proxyStatus[id] = hasProxy ? `${c.gr}${proxyIp}${c.rst}` : `${c.gr}NONE${c.rst}`;
     const client = createClient(acc, acc.proxy);
-    const winHour = ([...WINDOWS].reverse().find(h => h <= now.hour()) || 0).toString().padStart(2, '0');
+    const winHour = ([...WINDOWS].reverse().find(h => h <= moment.utc().hour()) || 0).toString().padStart(2, '0');
 
     // Initial Balance & TRUE Server Sync (Optimized Master API)
     if (!sessionSynced.has(id)) {
@@ -300,7 +307,7 @@ async function processAccount(acc, idx) {
             accLog.tokens.G = parseFloat(tData.interlinkGoldTokenAmount || 0);
             
             if (tData.lastClaimTime) accLog.lastClaimServer = moment(tData.lastClaimTime).format('YYYY-MM-DD HH:mm:ss');
-            accLog.lastSync = moment().format('HH:mm'); // Sync Time
+            accLog.lastSync = moment().format('HH:mm'); 
             if (accLog.startBal === null) accLog.startBal = prevLog ? prevLog.tokens.G : accLog.tokens.G;
 
             const isClaimable = uData.isClaimable?.isClaimable;
@@ -321,8 +328,7 @@ async function processAccount(acc, idx) {
         }
     }
 
-    // --- SMART GROUP MINING ENGINE ---
-    // Executes safely during or after the 09:30 IST window (04:00 UTC)
+    // --- DOMINO 1: SMART GROUP MINING ENGINE ---
     if (accLog.groupClaimDate !== today && parseInt(winHour) >= 4) {
         try {
             const gRes = await client.post('/group-mining/get-list-group-mining', {});
@@ -342,7 +348,7 @@ async function processAccount(acc, idx) {
                 currentStatus[id] = `${c.w}GROUP FOUND. JITTERING...${c.rst}`;
                 displayAccount(acc, idx, accLog, prevLog, logs, today);
                 
-                const jitterMs = Math.floor(Math.random() * 30000) + 15000;
+                const jitterMs = Math.floor(Math.random() * 30000) + 15000; // 15-45s
                 await new Promise(r => setTimeout(r, jitterMs));
 
                 const cRes = await client.post('/group-mining/claim-group-mining', { groupId: bestGroup.groupId });
@@ -352,7 +358,6 @@ async function processAccount(acc, idx) {
                     accLog.groupClaimDate = today;
                     accLog.groupState = { name: bestGroup.groupId, reward: highestReward };
                     
-                    // Fetch accurate balance instantly
                     const fastBal = await client.get('/token/get-token');
                     accLog.tokens.G = parseFloat(fastBal.data?.data?.interlinkGoldTokenAmount || accLog.tokens.G);
                     accLog.lastSync = moment().format('HH:mm'); 
@@ -360,13 +365,30 @@ async function processAccount(acc, idx) {
                 }
             } else {
                 accLog.groupClaimDate = today;
-                accLog.groupState = null; // Found nothing or manually claimed
+                accLog.groupState = null; 
                 saveLogs(logs);
             }
         } catch(e) { /* Silently fail group mining to protect main loop */ }
     }
 
-    const isClaimNeeded = (forecasts[id] && now.isSameOrAfter(forecasts[id]));
+    // --- DOMINO 2: SILENT CURATOR SYNC ---
+    if (accLog.curatorSyncDate !== today && parseInt(winHour) >= 4) {
+        try {
+            // Micro-Jitter (3-7s) to prevent bot-like instant consecutive requests
+            await new Promise(r => setTimeout(r, Math.floor(Math.random() * 4000) + 3000));
+            
+            const syncCheck = await client.get('/synchronize-curator');
+            if (syncCheck.data?.data?.canClick) {
+                await client.post('/synchronize-curator', {});
+            }
+            accLog.curatorSyncDate = today;
+            saveLogs(logs);
+        } catch(e) { /* Silently fail curator sync to protect main loop */ }
+    }
+
+    // --- DOMINO 3: AIRDROP CLAIMING (Stale Clock Fix) ---
+    // Re-evaluate live UTC time right before checking, accounting for any jitter delays
+    const isClaimNeeded = (forecasts[id] && moment.utc().isSameOrAfter(forecasts[id]));
 
     if (!isClaimNeeded) {
         if (!currentStatus[id]?.includes('ALREADY CLAIMED')) {
@@ -376,14 +398,12 @@ async function processAccount(acc, idx) {
         return;
     }
 
-    // --- AIRDROP CLAIMING ---
     try {
         const check = await client.get('/token/check-is-claimable');
         if (check.data?.data?.isClaimable) {
             await client.post('/token/claim-airdrop', {});
             accLog.windows[winHour] = moment().format('HH:mm');
 
-            // Lightweight fast-fetch for exact timestamp and balance
             const postBal = await client.get('/token/get-token');
             const newTData = postBal.data?.data || {};
             
@@ -412,7 +432,10 @@ async function processAccount(acc, idx) {
 function displayAccount(acc, idx, accLog, prevLog, logs, today) {
     const id = acc.registeredEmail || acc.email || acc.deviceId || acc.loginId;
     const baseBal = prevLog ? (prevLog.tokens.G || 0) : (accLog.startBal || accLog.tokens.G || 0);
-    const dailyProfit = ((accLog.tokens.G || 0) - baseBal).toFixed(2);
+    const rawProfit = ((accLog.tokens.G || 0) - baseBal);
+    
+    // Profit Color Logic: Red for negative, Green with '+' for positive
+    let profitStr = rawProfit >= 0 ? `${c.g}+${rawProfit.toFixed(2)}${c.rst}` : `${c.e}${rawProfit.toFixed(2)}${c.rst}`;
 
     const stat = currentStatus[id] || `${c.gr}WAITING${c.rst}`;
     const pStat = proxyStatus[id] || `${c.gr}CHECKING${c.rst}`;
@@ -439,10 +462,10 @@ function displayAccount(acc, idx, accLog, prevLog, logs, today) {
     }
     console.log(`${c.cy}⸽ ${c.rst}Coins: ${c.m}${(accLog.tokens.G || 0).toFixed(2)}${c.rst} | Group: ${groupStr}`);
 
-    // Line 4: Profit (Removed EOD text)
+    // Line 4: Profit (Dynamic Color)
     let ystStr = prevLog ? (prevLog.tokens.G || 0).toFixed(2) : '0.00';
     let syncTime = accLog.lastSync ? accLog.lastSync : '--:--';
-    console.log(`${c.cy}⸽ ${c.rst}Profit: ${c.g}+${dailyProfit}${c.rst} ${c.gr}(${syncTime})${c.rst} | YST: ${c.wh}${ystStr}${c.rst}`);
+    console.log(`${c.cy}⸽ ${c.rst}Profit: ${profitStr} ${c.gr}(${syncTime})${c.rst} | YST: ${c.wh}${ystStr}${c.rst}`);
 
     // Line 5: Spin & Wallet
     let walletWord = (acc.wallet && acc.wallet !== 'None') ? `${c.g}Wallet${c.rst}` : `${c.gr}Wallet${c.rst}`;
@@ -540,7 +563,7 @@ async function interruptibleSleep(ms, logIntervalMs = 0) {
 async function main() {
     console.clear();
     console.log(`${c.cy}=================================================${c.rst}`);
-    console.log(`         ${c.s}${c.b}INTERLINK MASTER CONTROLLER${c.rst}`);
+    console.log(`         ${c.s}${c.b}INTERLINK FARMER ${APP_VERSION}: by PRASHANTH${c.rst}`);
     console.log(`${c.cy}=================================================${c.rst}`);
 
     let { accounts, logs } = migrateData();
@@ -591,7 +614,7 @@ async function main() {
         const diff = moment.utc().hour(winEndUtc === 0 ? 24 : winEndUtc).minute(0).second(0).diff(now);
         const rem = moment.duration(diff);
 
-        console.log(`\n           ${c.s}${c.b}INTERLINK FARMER: by PRASHANTH${c.rst}`);
+        console.log(`\n           ${c.s}${c.b}INTERLINK FARMER ${APP_VERSION}: by PRASHANTH${c.rst}`);
         console.log(`      ${c.gr}GMT ${moment().format('Z')} | Window: ${localWinStart}-${localWinEnd} | Rem: ${Math.floor(rem.asHours())}h ${rem.minutes()}m${c.rst}`);
         if (enableSpin) console.log(`      ${c.w}Lucky Spin Module: Active${c.rst}\n`);
         else console.log(`\n`);                               
