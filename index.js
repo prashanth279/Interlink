@@ -5,7 +5,6 @@ const moment = require('moment');
 const crypto = require('crypto');
 const https = require('https');
 const readline = require('readline');
-const { spawn } = require('child_process');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 
@@ -14,7 +13,7 @@ const LOGS_JSON = path.join(__dirname, 'logs.json');
 const DEVICE_POOL = path.join(__dirname, 'devicepool.txt');
 const API_BASE = 'https://prod.interlinklabs.ai/api/v1';
 const WINDOWS = [0, 4, 8, 12, 16, 20];
-const APP_VERSION = '5.0.2'; 
+const APP_VERSION = '5.0.2.a'; 
 
 // Advanced 256-Color Palette
 const c = {
@@ -39,8 +38,6 @@ let proxyStatus = {};
 let sessionSynced = new Set();
 let isShuttingDown = false;
 let isWritingLogs = false; 
-let enableSpin = false;
-let lastSpinWindow = null;
 
 // --- UTILITIES & LOG MANAGEMENT ---
 function migrateData() {
@@ -256,7 +253,7 @@ async function processAccount(acc, idx) {
     const id = acc.registeredEmail || acc.email || acc.deviceId || acc.loginId;
     if (!logs[today]) logs[today] = {};
     if (!logs[today][id]) {
-        logs[today][id] = { startBal: null, windows: {}, tokens: { G: 0 }, lastSync: null, lastClaimServer: null, spinProfit: 0, groupClaimDate: null, groupState: null, curatorSyncDate: null };
+        logs[today][id] = { startBal: null, windows: {}, tokens: { G: 0 }, lastSync: null, lastClaimServer: null, groupClaimDate: null, groupState: null, curatorSyncDate: null };
     }
     let accLog = logs[today][id];
     let prevLog = logs[yesterday]?.[id] || null;
@@ -467,13 +464,9 @@ function displayAccount(acc, idx, accLog, prevLog, logs, today) {
     let syncTime = accLog.lastSync ? accLog.lastSync : '--:--';
     console.log(`${c.cy}⸽ ${c.rst}Profit: ${profitStr} ${c.gr}(${syncTime})${c.rst} | YST: ${c.wh}${ystStr}${c.rst}`);
 
-    // Line 5: Spin & Wallet
+    // Line 5: Wallet & Proxy (Spin Removed)
     let walletWord = (acc.wallet && acc.wallet !== 'None') ? `${c.g}Wallet${c.rst}` : `${c.gr}Wallet${c.rst}`;
-    let spinWord = enableSpin ? `${c.g}Spin${c.rst}` : `${c.gr}Spin${c.rst}`;
-    let allTimeSpin = logs[today]?.[id]?.spinProfit || 0;
-    let spinPnLColor = allTimeSpin > 0 ? c.g : (allTimeSpin < 0 ? c.e : c.gr);
-    let spinPnLSign = allTimeSpin > 0 ? '+' : '';
-    console.log(`${c.cy}⸽ ${c.rst}${walletWord} | ${spinWord} (${spinPnLColor}${spinPnLSign}${allTimeSpin.toFixed(2)}${c.rst}) | Proxy: ${pStat}`);
+    console.log(`${c.cy}⸽ ${c.rst}${walletWord} | Proxy: ${pStat}`);
 
     // Line 6 & 7: Windows Grid
     const windowTriplets = [[0, 4, 8], [12, 16, 20]];
@@ -496,43 +489,6 @@ function displayAccount(acc, idx, accLog, prevLog, logs, today) {
 
     // Line 8: Next Claim
     console.log(`${c.cy}⫹── ${c.rst}Next Claim: ${c.b}${c.wh}${nextClaimTarget}${c.rst}\n`);
-}
-
-function launchSpinScript() {
-    return new Promise((resolve) => {
-        console.clear();
-        console.log(`\n${c.p}⫸${c.rst} ${c.b}HANDING OVER CONTROL TO SPIN.JS...${c.rst}\n`);
-        
-        const spinPath = path.join(__dirname, 'spin.js');
-        const child = spawn('node', [spinPath], { stdio: 'inherit' });
-        
-        child.on('close', () => {
-            resolve();
-        });
-    });
-}
-
-function askSpinPrompt() {
-    return new Promise((resolve) => {
-        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        let answered = false;
-
-        const timer = setTimeout(() => {
-            if (!answered) {
-                console.log(`\n${c.gr}[Timeout] Defaulting to No.${c.rst}`);
-                rl.close();
-                resolve(false);
-            }
-        }, 5000);
-
-        rl.question(`\n${c.cy}⸽ ${c.w}Run with Lucky Spin automation? (Y/n) ${c.gr}[Auto-skipping in 5s...]: ${c.rst}`, (answer) => {
-            answered = true;
-            clearTimeout(timer);
-            rl.close();
-            if (answer.trim().toLowerCase() === 'y') resolve(true);
-            else resolve(false);
-        });
-    });
 }
 
 // --- PM2 SMART SLEEP ENGINE ---
@@ -575,9 +531,6 @@ async function main() {
     syncDevicePool(accounts);
     accounts = migrateData().accounts; 
 
-    enableSpin = await askSpinPrompt();
-    if (enableSpin) console.log(`\n${c.g}✅ Lucky Spin Automation Enabled.${c.rst}\n`);
-
     await new Promise(r => setTimeout(r, 1000));
     const today = moment.utc().format('YYYY-MM-DD');
 
@@ -607,7 +560,6 @@ async function main() {
         const now = moment.utc();
         const winStartUtc = Math.floor(now.hour() / 4) * 4;
         const winEndUtc = (winStartUtc + 4) % 24;
-        const winHourKey = winStartUtc.toString().padStart(2, '0');
 
         const localWinStart = moment.utc().hour(winStartUtc).minute(0).local().format('HH:mm');
         const localWinEnd = moment.utc().hour(winEndUtc === 0 ? 24 : winEndUtc).minute(0).local().format('HH:mm');          
@@ -615,9 +567,7 @@ async function main() {
         const rem = moment.duration(diff);
 
         console.log(`\n           ${c.s}${c.b}INTERLINK FARMER ${APP_VERSION}: by PRASHANTH${c.rst}`);
-        console.log(`      ${c.gr}GMT ${moment().format('Z')} | Window: ${localWinStart}-${localWinEnd} | Rem: ${Math.floor(rem.asHours())}h ${rem.minutes()}m${c.rst}`);
-        if (enableSpin) console.log(`      ${c.w}Lucky Spin Module: Active${c.rst}\n`);
-        else console.log(`\n`);                               
+        console.log(`      ${c.gr}GMT ${moment().format('Z')} | Window: ${localWinStart}-${localWinEnd} | Rem: ${Math.floor(rem.asHours())}h ${rem.minutes()}m${c.rst}\n`);                               
         console.log(`${c.cy}─${c.rst}`.repeat(60) + `\n`);
 
         for (let i = 0; i < accounts.length; i++) {
@@ -635,22 +585,6 @@ async function main() {
         if (isShuttingDown) break;
 
         const activeAccs = accounts.filter(a => !a.paused);
-        
-        const allClaimedForWindow = activeAccs.every(a => {
-            const aId = a.registeredEmail || a.email || a.deviceId || a.loginId;
-            return getLogs()[today]?.[aId]?.windows?.[winHourKey] === "DONE" || getLogs()[today]?.[aId]?.windows?.[winHourKey] !== undefined;
-        });
-
-        if (enableSpin && allClaimedForWindow && lastSpinWindow !== winHourKey) {
-            console.log(`\n${c.g}${c.b}>>> ALL CLAIMS COMPLETE FOR ${localWinStart} WINDOW. TRIGGERING SPIN SCRIPT... <<<${c.rst}`);
-            await interruptibleSleep(3000);
-            if(!isShuttingDown) await launchSpinScript();
-            lastSpinWindow = winHourKey; 
-            console.log(`\n${c.p}⫸${c.rst} ${c.b}SPIN SCRIPT COMPLETE. RESUMING NORMAL FARMING...${c.rst}\n`);
-            await interruptibleSleep(2000);
-            continue; 
-        }
-
         let allAccountsDone = true;
         let earliestNextFrame = null;
 
