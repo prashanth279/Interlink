@@ -13,7 +13,7 @@ const LOGS_JSON = path.join(__dirname, 'logs.json');
 const DEVICE_POOL = path.join(__dirname, 'devicepool.txt');
 const API_BASE = 'https://prod.interlinklabs.ai/api/v1';
 const WINDOWS = [0, 4, 8, 12, 16, 20];
-const APP_VERSION = '5.0.2.a'; 
+const APP_VERSION = '5.0.3'; 
 
 // Advanced 256-Color Palette
 const c = {
@@ -161,6 +161,7 @@ function updateAccountTokens(accId, newToken, newRefreshToken) {
     } catch (e) { }
 }
 
+// --- NETWORK ENGINE ---
 function extractIp(proxyUrl) {
     if (!proxyUrl || proxyUrl.toUpperCase() === 'NONE') return 'NONE';
     try {
@@ -184,7 +185,7 @@ function getNextWindow() {
     return nextDate;
 }
 
-// --- CORE API CLIENT (WITH ADVANCED ANTI-BAN SPOOFING) ---
+// --- CORE API CLIENT ---
 function createClient(acc, proxy) {
     const agent = (proxy && proxy.toUpperCase() !== 'NONE') ? (proxy.startsWith('socks') ? new SocksProxyAgent(proxy.trim()) : new HttpsProxyAgent(proxy.trim())) : new https.Agent({ rejectUnauthorized: false });
 
@@ -234,7 +235,6 @@ async function pulseCheck(proxyUrl) {
         await axios.get('https://api.ipify.org?format=json', { httpsAgent: agent, timeout: 10000 });
         return true;
     } catch (e) { 
-        // Fallback network check if ipify is down
         try {
             await axios.get('https://icanhazip.com', { httpsAgent: agent, timeout: 10000 });
             return true;
@@ -294,7 +294,7 @@ async function processAccount(acc, idx) {
     const client = createClient(acc, acc.proxy);
     const winHour = ([...WINDOWS].reverse().find(h => h <= moment.utc().hour()) || 0).toString().padStart(2, '0');
 
-    // Initial Balance & TRUE Server Sync (Optimized Master API)
+    // Initial Balance & TRUE Server Sync
     if (!sessionSynced.has(id)) {
         try {
             const masterRes = await client.get('/auth/current-user-full?include=userInfo,token,isClaimable');
@@ -335,7 +335,8 @@ async function processAccount(acc, idx) {
             let highestReward = -1;
 
             groups.forEach(g => {
-                if (g.secure && g.canClaim) {
+                // Vonossy 5.0.3 Architecture Update: g.secure flag dropped
+                if (g.canClaim) {
                     const r = parseFloat(g.totalReward || 0);
                     if (r > highestReward) { highestReward = r; bestGroup = g; }
                 }
@@ -371,9 +372,7 @@ async function processAccount(acc, idx) {
     // --- DOMINO 2: SILENT CURATOR SYNC ---
     if (accLog.curatorSyncDate !== today && parseInt(winHour) >= 4) {
         try {
-            // Micro-Jitter (3-7s) to prevent bot-like instant consecutive requests
             await new Promise(r => setTimeout(r, Math.floor(Math.random() * 4000) + 3000));
-            
             const syncCheck = await client.get('/synchronize-curator');
             if (syncCheck.data?.data?.canClick) {
                 await client.post('/synchronize-curator', {});
@@ -383,8 +382,7 @@ async function processAccount(acc, idx) {
         } catch(e) { /* Silently fail curator sync to protect main loop */ }
     }
 
-    // --- DOMINO 3: AIRDROP CLAIMING (Stale Clock Fix) ---
-    // Re-evaluate live UTC time right before checking, accounting for any jitter delays
+    // --- DOMINO 3: AIRDROP CLAIMING ---
     const isClaimNeeded = (forecasts[id] && moment.utc().isSameOrAfter(forecasts[id]));
 
     if (!isClaimNeeded) {
@@ -431,44 +429,30 @@ function displayAccount(acc, idx, accLog, prevLog, logs, today) {
     const baseBal = prevLog ? (prevLog.tokens.G || 0) : (accLog.startBal || accLog.tokens.G || 0);
     const rawProfit = ((accLog.tokens.G || 0) - baseBal);
     
-    // Profit Color Logic: Red for negative, Green with '+' for positive
     let profitStr = rawProfit >= 0 ? `${c.g}+${rawProfit.toFixed(2)}${c.rst}` : `${c.e}${rawProfit.toFixed(2)}${c.rst}`;
-
     const stat = currentStatus[id] || `${c.gr}WAITING${c.rst}`;
     const pStat = proxyStatus[id] || `${c.gr}CHECKING${c.rst}`;
-
     const uName = acc.name || 'Unknown';
     const lId = acc.loginId || acc.email || 'N/A';
     const nextClaimTarget = forecasts[id] ? forecasts[id].local().format('HH:mm') : "--:--";
     
-    // Line 1: Header (Blue Time)
     let lastClaimStr = accLog.lastClaimServer ? moment(accLog.lastClaimServer, 'YYYY-MM-DD HH:mm:ss').format('HH:mm') : 'N/A';
     console.log(`${c.cy}⫸ ${c.wh}${c.b}Acc ${idx + 1}:${c.rst} ${c.p}${uName}${c.rst} | ${c.wh}${lId}${c.rst} | ${c.s}Last Claim: ${c.p}${lastClaimStr}${c.rst}`);
-
-    // Line 2: Status
     console.log(`${c.cy}⸽ Status: ${stat}${c.rst}`);
 
-    // Line 3: Magenta Coins & Group UI
     let groupStr = `${c.gr}Waiting till ${nextClaimTarget}${c.rst}`;
     if (accLog.groupClaimDate === today) {
-        if (accLog.groupState) {
-            groupStr = `${c.g}${accLog.groupState.name} (+${accLog.groupState.reward})${c.rst}`;
-        } else {
-            groupStr = `${c.w}Manually Claimed${c.rst}`; 
-        }
+        groupStr = accLog.groupState ? `${c.g}${accLog.groupState.name} (+${accLog.groupState.reward})${c.rst}` : `${c.w}Manually Claimed${c.rst}`;
     }
     console.log(`${c.cy}⸽ ${c.rst}Coins: ${c.m}${(accLog.tokens.G || 0).toFixed(2)}${c.rst} | Group: ${groupStr}`);
 
-    // Line 4: Profit (Dynamic Color)
     let ystStr = prevLog ? (prevLog.tokens.G || 0).toFixed(2) : '0.00';
     let syncTime = accLog.lastSync ? accLog.lastSync : '--:--';
     console.log(`${c.cy}⸽ ${c.rst}Profit: ${profitStr} ${c.gr}(${syncTime})${c.rst} | YST: ${c.wh}${ystStr}${c.rst}`);
 
-    // Line 5: Wallet & Proxy (Spin Removed)
     let walletWord = (acc.wallet && acc.wallet !== 'None') ? `${c.g}Wallet${c.rst}` : `${c.gr}Wallet${c.rst}`;
     console.log(`${c.cy}⸽ ${c.rst}${walletWord} | Proxy: ${pStat}`);
 
-    // Line 6 & 7: Windows Grid
     const windowTriplets = [[0, 4, 8], [12, 16, 20]];
     const now = moment.utc();
 
@@ -487,7 +471,6 @@ function displayAccount(acc, idx, accLog, prevLog, logs, today) {
         console.log(`${c.cy}⸽ ${c.rst}${line}`);
     });
 
-    // Line 8: Next Claim
     console.log(`${c.cy}⫹── ${c.rst}Next Claim: ${c.b}${c.wh}${nextClaimTarget}${c.rst}\n`);
 }
 
@@ -497,9 +480,7 @@ async function interruptibleSleep(ms, logIntervalMs = 0) {
     let nextLog = logIntervalMs;
     for (let i = 0; i < steps; i++) {
         if (isShuttingDown) return; 
-        
         if (moment().format('HH:mm:ss') === '00:00:01') trimLogs();
-
         await new Promise(r => setTimeout(r, 1000));
         
         if (logIntervalMs > 0) {
@@ -524,9 +505,7 @@ async function main() {
 
     let { accounts, logs } = migrateData();
     const logsTrimmed = trimLogs();
-    if (logsTrimmed) {
-        console.log(`\n${c.g}✅ [Log Manager] Excess history removed.${c.rst}`);
-    }
+    if (logsTrimmed) console.log(`\n${c.g}✅ [Log Manager] Excess history removed.${c.rst}`);
 
     syncDevicePool(accounts);
     accounts = migrateData().accounts; 
@@ -575,10 +554,8 @@ async function main() {
             await processAccount(accounts[i], i);
             console.log(`${c.cy}─${c.rst}`.repeat(60) + `\n`);
             
-            // Inter-Account Jitter (3-8 seconds)
             if (i < accounts.length - 1 && !isShuttingDown) {
-                const interJitter = Math.floor(Math.random() * 5000) + 3000;
-                await new Promise(r => setTimeout(r, interJitter));
+                await new Promise(r => setTimeout(r, Math.floor(Math.random() * 5000) + 3000));
             }
         }
 
@@ -603,16 +580,12 @@ async function main() {
         if (allAccountsDone && earliestNextFrame) {
             const waitMs = earliestNextFrame.diff(moment.utc());
             const nextTimeStr = earliestNextFrame.local().format('HH:mm');
-            
             console.log(`\n${c.p}⫸${c.rst} ${c.b}Deep Sleep Till ${nextTimeStr}${c.rst}\n`);
-            
             await interruptibleSleep(waitMs, 600000); 
-            
         } else {
             const retryDelayMs = Math.floor(Math.random() * 60000) + 60000; 
             console.log(`${c.p}⫸${c.rst} ${c.w}ACTIVE PURSUIT MODE:${c.rst} Accounts pending or failed.`);
             console.log(`${c.gr}>> Retrying operations in ${Math.floor(retryDelayMs / 1000)} seconds...${c.rst}\n`);
-            
             await interruptibleSleep(retryDelayMs);
         }
     }
