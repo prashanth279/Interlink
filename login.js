@@ -4,37 +4,23 @@ const path = require('path');
 const crypto = require('crypto');
 const readline = require('readline');
 const https = require('https');
-
-const c = { cy: '\x1b[36m', m: '\x1b[35m', y: '\x1b[33m', g: '\x1b[32m', r: '\x1b[31m', w: '\x1b[37m', gr: '\x1b[90m', b: '\x1b[1m', rst: '\x1b[0m', wh: '\x1b[97m' };
-
-function setupEnvironment() {
-    const pkgs = ['axios', 'moment', 'https-proxy-agent', 'socks-proxy-agent'];
-    pkgs.forEach(p => { 
-        try { require.resolve(p); } catch (e) { 
-            console.log(`${c.gr}Installing ${p}...${c.rst}`);
-            execSync(`npm install ${p}`, { stdio: 'inherit' }); 
-        } 
-    });
-    if (!fs.existsSync(path.join(__dirname, 'accounts.json'))) fs.writeFileSync(path.join(__dirname, 'accounts.json'), '[]');
-    if (!fs.existsSync(path.join(__dirname, 'logs.json'))) fs.writeFileSync(path.join(__dirname, 'logs.json'), '{}');
-    if (!fs.existsSync(path.join(__dirname, 'devicepool.txt'))) fs.writeFileSync(path.join(__dirname, 'devicepool.txt'), '# Format: email | Brand | Model | DeviceID\n');
-}
-setupEnvironment();
-
 const axios = require('axios');
 const moment = require('moment');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 
 // --- APP CONFIGURATION ---
-const APP_VERSION = '5.0.1'; 
+const APP_VERSION = '5.0.3'; 
 const API_BASE_URL = 'https://prod.interlinklabs.ai/api/v1';
 const MINI_API_URL = 'https://interlink-mini-app.interlinklabs.ai/api';
 const ACCOUNTS_JSON = path.join(__dirname, 'accounts.json');
 const DEVICE_POOL = path.join(__dirname, 'devicepool.txt');
 
+// Advanced 256-Color Palette
+const c = { p: '\x1b[38;5;39m', s: '\x1b[38;5;198m', a: '\x1b[38;5;118m', w: '\x1b[38;5;220m', e: '\x1b[38;5;196m', g: '\x1b[38;5;46m', wh: '\x1b[97m', gr: '\x1b[38;5;245m', cy: '\x1b[36m', m: '\x1b[38;5;207m', b: '\x1b[1m', rst: '\x1b[0m' };
+
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-const prompt = (q) => new Promise((res) => rl.question(`${c.cy}⸽ ${c.w}${q}${c.rst}`, (a) => res(a.trim())));
+const prompt = (q) => new Promise((res) => rl.question(`${c.cy}⸽ ${c.wh}${q}${c.rst}`, (a) => res(a.trim())));
 
 const MODELS = [
     { brand: 'POCO', model: '25053PC47G' }, 
@@ -46,6 +32,12 @@ const MODELS = [
 function getAgent(proxy) {
     if (!proxy || proxy.toUpperCase() === 'NONE') return new https.Agent({ rejectUnauthorized: false });
     return proxy.startsWith('socks') ? new SocksProxyAgent(proxy) : new HttpsProxyAgent(proxy);
+}
+
+function getJwtExp(token) {
+    if (!token) return 0;
+    try { return JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString()).exp; } 
+    catch (e) { return 0; }
 }
 
 function getHeaders(acc) {
@@ -65,16 +57,91 @@ function getHeaders(acc) {
     };
 }
 
-// --- DEVICE POOL MANAGER ---
+// --- NETWORK & REFRESH ENGINE ---
+async function pulseCheck(proxyUrl) {
+    const agent = getAgent(proxyUrl);
+    try {
+        await axios.get('https://api.ipify.org?format=json', { httpsAgent: agent, timeout: 10000 });
+        return true;
+    } catch (e) { 
+        try {
+            await axios.get('https://icanhazip.com', { httpsAgent: agent, timeout: 10000 });
+            return true;
+        } catch (e2) { return false; }
+    }
+}
+
+async function doRefreshToken(acc) {
+    if (!acc.refreshToken) return false;
+    try {
+        const client = axios.create({ baseURL: API_BASE_URL, headers: getHeaders(acc), httpsAgent: getAgent(acc.proxy) });
+        const res = await client.post(`/auth/token`, { refreshToken: acc.refreshToken });
+        if (res.data && res.data.data) {
+            acc.token = res.data.data.accessToken || res.data.data.jwtToken;
+            acc.refreshToken = res.data.data.refreshToken || acc.refreshToken;
+            return true;
+        }
+        return false;
+    } catch (e) { return false; }
+}
+
+// --- BOOT-UP SYNC LOGIC ---
+async function syncProfile(acc) {
+    const isAlive = await pulseCheck(acc.proxy);
+    if (!isAlive) {
+        acc.syncStatus = 'CONN_FAIL';
+        return acc;
+    }
+
+    const exp = getJwtExp(acc.token);
+    const nowTs = Math.floor(Date.now() / 1000);
+    
+    if (exp > 0 && nowTs > exp) {
+        const refreshed = await doRefreshToken(acc);
+        if (!refreshed) {
+            acc.syncStatus = 'EXP';
+            return acc;
+        }
+    }
+
+    const agent = getAgent(acc.proxy);
+    const client = axios.create({
+        baseURL: API_BASE_URL,
+        headers: { ...getHeaders(acc), 'Authorization': `Bearer ${acc.token}` },
+        httpsAgent: agent, timeout: 15000
+    });
+
+    try {
+        const userRes = await client.get('/auth/current-user-full?include=userInfo,token,isClaimable');
+        const userData = userRes.data?.data?.userInfo || userRes.data?.data || {};
+
+        acc.name = userData.username || userData.name || acc.name;
+        acc.loginId = userData.loginId || acc.loginId;
+        acc.registeredEmail = userData.email || acc.registeredEmail;
+        acc.wallet = userData.connectedAccounts?.wallet?.address || 'None';
+        acc.lastUpdate = moment().format('YYYY-MM-DD HH:mm:ss');
+        acc.syncStatus = 'SYNCED';
+
+        return acc;
+    } catch (e) {
+        if (e.response && (e.response.status === 400 || e.response.status === 401)) {
+            acc.syncStatus = 'EXP';
+        } else {
+            acc.syncStatus = 'CONN_FAIL';
+        }
+        return acc; 
+    }
+}
+
+// --- CORE LOGIN LOGIC (V2 SECURED) ---
 function appendToDevicePool(email, brand, model, deviceId) {
     const idKey = email;
-    let poolText = fs.readFileSync(DEVICE_POOL, 'utf8');
+    let poolText = fs.existsSync(DEVICE_POOL) ? fs.readFileSync(DEVICE_POOL, 'utf8') : '';
     if (!poolText.includes(idKey)) {
         fs.appendFileSync(DEVICE_POOL, `${idKey} | ${brand} | ${model} | ${deviceId}\n`);
     }
 }
 
-// --- CORE LOGIN LOGIC (V2 SECURED) ---
 async function performLogin(targetAcc = null) {
     console.log(`\n${c.m}◢◤ ${c.cy}AUTH_PROTOCOL_INITIATED (v${APP_VERSION}) ${c.m}◥◣${c.rst}`);
     
@@ -96,7 +163,6 @@ async function performLogin(targetAcc = null) {
         deviceId = crypto.randomBytes(8).toString('hex');
         identity = MODELS[Math.floor(Math.random() * MODELS.length)];
         
-        // Save new footprint to Device Pool instantly
         appendToDevicePool(email, identity.brand, identity.model, deviceId);
     }
 
@@ -110,12 +176,6 @@ async function performLogin(targetAcc = null) {
     });
 
     try {
-        console.log(`${c.gr}⸽ Checking Login ID...${c.rst}`);
-        await client.get(`/auth/loginId-exist-check/${loginId}`, { params: { deviceId } });
-        
-        console.log(`${c.gr}⸽ Verifying Passcode...${c.rst}`);
-        await client.post('/auth/check-passcode', { loginId, passcode, deviceId });
-        
         console.log(`${c.gr}⸽ Requesting OTP...${c.rst}`);
         await client.post('/auth/send-otp-email-verify-login', { loginId, passcode, email, deviceId });
         console.log(`${c.g}⫸ OTP SENT TO EMAIL!${c.rst}`);
@@ -123,15 +183,12 @@ async function performLogin(targetAcc = null) {
         const otp = await prompt('ENTER OTP: ');
         
         console.log(`${c.gr}⸽ Verifying OTP (v2 Security Handshake)...${c.rst}`);
-        
-        // V2 Patched: Strict Headers + deviceId injected into payload
         const verifyRes = await client.post(`/auth/check-otp-email-verify-login?v=2`, { 
             loginId, 
             otp,
             deviceId 
         });
 
-        // Fetch Both Tokens
         const token = verifyRes.data?.data?.accessToken || verifyRes.data?.data?.jwtToken;
         const refreshToken = verifyRes.data?.data?.refreshToken || null;
         
@@ -149,54 +206,8 @@ async function performLogin(targetAcc = null) {
             await prompt('\nPress Enter to return to menu...');
         }
     } catch (e) {
-        console.log(`\n${c.r}❌ AUTH_FAILED: ${e.response?.data?.message || e.message}${c.rst}`);
+        console.log(`\n${c.e}❌ AUTH_FAILED: ${e.response?.data?.message || e.message}${c.rst}`);
         await prompt('\nPress Enter to return to menu...');
-    }
-}
-
-// --- PROFILE SYNC LOGIC ---
-async function syncProfile(acc) {
-    const agent = getAgent(acc.proxy);
-    const client = axios.create({
-        baseURL: API_BASE_URL,
-        headers: { ...getHeaders(acc), 'Authorization': `Bearer ${acc.token}` },
-        httpsAgent: agent, timeout: 15000
-    });
-
-    try {
-        console.log(`${c.cy}⸽ Fetching Profile Data for ${c.w}${acc.name || acc.registeredEmail || acc.deviceId}${c.rst}...`);
-        
-        const userRes = await client.get('/auth/current-user');
-        const userData = userRes.data?.data || {};
-
-        const tokenRes = await client.get('/token/get-token');
-        const tokenData = tokenRes.data?.data || {};
-
-        let miniToken = acc.miniToken;
-        if (userData.loginId) {
-            try {
-                const miniRes = await axios.post(`${MINI_API_URL}/tracking/verify`,
-                    { loginId: userData.loginId, appId: 'id__mk39oef6we80fs7j2rif' },
-                    { headers: { 'api-public': 'e97ae0aa6520499d9edf20bd5a1e13c7', 'Authorization': `Bearer ${acc.token}` }, httpsAgent: agent }
-                );
-                miniToken = miniRes.data?.data?.token || miniRes.data?.token || miniToken;
-            } catch(e) { }
-        }
-
-        acc.name = userData.username || acc.name;
-        acc.loginId = userData.loginId || acc.loginId;
-        acc.registeredEmail = userData.email || acc.registeredEmail;
-        acc.wallet = userData.connectedAccounts?.wallet?.address || 'None';
-        acc.referralId = tokenData.userReferralId || acc.referralId;
-        acc.miniToken = miniToken;
-        acc.lastUpdate = moment().format('YYYY-MM-DD HH:mm:ss');
-
-        console.log(`${c.g}✅ PROFILE SYNCED: ${acc.name}${c.rst}`);
-        return acc;
-
-    } catch (e) {
-        console.log(`${c.r}❌ SYNC FAILED: Token may be expired. Status ${e.response?.status || e.message}${c.rst}`);
-        return acc; 
     }
 }
 
@@ -212,21 +223,46 @@ function saveAllAccounts(accounts) {
     fs.writeFileSync(ACCOUNTS_JSON, JSON.stringify(accounts, null, 2));
 }
 
-// --- MAIN MENU ---
+// --- MAIN UI LOGIC ---
 async function main() {
+    let accounts = fs.existsSync(ACCOUNTS_JSON) ? JSON.parse(fs.readFileSync(ACCOUNTS_JSON, 'utf8')) : [];
+    
+    if (accounts.length > 0) {
+        console.clear();
+        console.log(`${c.m}══ ${c.b}${c.cy}INTERLINK LOGIN ${APP_VERSION}${c.rst} ${c.m}══${c.rst}\n`);
+        console.log(`${c.gr}[BOOT SEQUENCE] Testing connections and synchronizing endpoints...${c.rst}\n`);
+        
+        for (let i = 0; i < accounts.length; i++) {
+            const tempName = accounts[i].name || accounts[i].loginId || 'Unknown';
+            process.stdout.write(`${c.cy}⸽ ${c.gr}Synchronizing Account ${i + 1} of ${accounts.length}: ${tempName}...${c.rst}\r`);
+            accounts[i] = await syncProfile(accounts[i]);
+            await new Promise(r => setTimeout(r, 500)); 
+        }
+        saveAllAccounts(accounts);
+    }
+
     while (true) {
         console.clear();
-        console.log(`${c.m}══ ${c.b}${c.cy}INTERLINK_COMMAND_CENTER_v5.0${c.rst} ${c.m}══${c.rst}\n`);
-        let accounts = JSON.parse(fs.readFileSync(ACCOUNTS_JSON, 'utf8'));
+        console.log(`${c.m}══ ${c.b}${c.cy}INTERLINK LOGIN ${APP_VERSION}${c.rst} ${c.m}══${c.rst}\n`);
+        accounts = JSON.parse(fs.readFileSync(ACCOUNTS_JSON, 'utf8'));
 
         if (accounts.length > 0) {
             accounts.forEach((a, i) => {
-                const status = a.paused ? `${c.r}[PAUSED]${c.rst}` : `${c.wh}[WORKING]${c.rst}`;
-                console.log(`${c.cy}⫸ ${c.w}${i+1}. ${a.name?.padEnd(12) || 'Unknown'.padEnd(12)}${c.rst} | ${status}`);
-            });
-        } else { console.log(`${c.gr}⸽ NO_ACCOUNTS_FOUND${c.rst}`); }
+                let statusTag = '';
+                if (a.syncStatus === 'SYNCED') statusTag = `${c.g}[🟢 SYNCED]${c.rst}`;
+                else if (a.syncStatus === 'EXP') statusTag = `${c.e}[🔴 EXP - FIX REQ]${c.rst}`;
+                else if (a.syncStatus === 'CONN_FAIL') statusTag = `${c.w}[🟡 CONN FAIL]${c.rst}`;
+                else statusTag = `${c.gr}[⚪ UNKNOWN]${c.rst}`;
 
-        console.log(`\n${c.cy}⫹── ${c.b}${c.w}1. ADD / FIX | 2. REMOVE | 3. UPDATE PROFILES | 4. TOGGLE PAUSE | 5. START INDEX.JS${c.rst} ──⫺`);
+                const pauseTag = a.paused ? `${c.gr}[PAUSED]${c.rst}` : `${c.wh}[WORKING]${c.rst}`;
+                
+                console.log(`${c.cy}⫸ ${c.wh}${i+1}. ${a.name?.padEnd(12) || 'Unknown'.padEnd(12)}${c.rst} | ${pauseTag} ${statusTag}`);
+            });
+        } else { 
+            console.log(`${c.gr}⸽ NO_ACCOUNTS_FOUND${c.rst}`); 
+        }
+
+        console.log(`\n${c.cy}⫹── ${c.b}${c.wh}1. ADD / FIX | 2. REMOVE | 3. TOGGLE PAUSE | 4. START INDEX.JS${c.rst} ──⫺`);
         const choice = await prompt('ACTION: ');
         
         if (choice === '1') {
@@ -236,27 +272,18 @@ async function main() {
             } else if (accounts[id-1]) {
                 await performLogin(accounts[id-1]);
             } else {
-                console.log(`${c.r}❌ Invalid selection.${c.rst}`);
+                console.log(`${c.e}❌ Invalid selection.${c.rst}`);
                 await new Promise(r => setTimeout(r, 1000));
             }
         } else if (choice === '2') {
             const id = await prompt('SELECT NUMBER TO REMOVE: ');
             if (accounts[id-1]) {
-                console.log(`${c.y}Removed ${accounts[id-1].name}${c.rst}`);
+                console.log(`${c.w}Removed ${accounts[id-1].name}${c.rst}`);
                 accounts.splice(id-1, 1);
                 saveAllAccounts(accounts);
                 await new Promise(r => setTimeout(r, 1000));
             }
         } else if (choice === '3') {
-            const target = await prompt('SELECT NUMBER TO UPDATE (OR TYPE "ALL"): ');
-            if (target.toUpperCase() === 'ALL') {
-                for (let i = 0; i < accounts.length; i++) accounts[i] = await syncProfile(accounts[i]);
-            } else if (accounts[target-1]) {
-                accounts[target-1] = await syncProfile(accounts[target-1]);
-            }
-            saveAllAccounts(accounts);
-            await prompt('\nPress Enter to return...');
-        } else if (choice === '4') {
             const id = await prompt('SELECT NUMBER TO TOGGLE PAUSE: ');
             if (accounts[id-1]) {
                 accounts[id-1].paused = !accounts[id-1].paused;
@@ -264,14 +291,11 @@ async function main() {
                 console.log(`${c.g}✅ ${accounts[id-1].name} Paused: ${accounts[id-1].paused}${c.rst}`);
                 await new Promise(r => setTimeout(r, 1000));
             }
-        } else if (choice === '5') {
+        } else if (choice === '4') {
             console.clear();
             console.log(`${c.g}🚀 LAUNCHING INDEX.JS...${c.rst}\n`);
-            
             const child = spawn('node', ['index.js'], { stdio: 'inherit' });
-            child.on('close', (code) => {
-                process.exit(code);
-            });
+            child.on('close', (code) => { process.exit(code); });
             break; 
         }
     }
