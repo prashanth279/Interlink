@@ -10,7 +10,7 @@ const { HttpsProxyAgent } = require('https-proxy-agent');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 
 // --- APP CONFIGURATION ---
-const APP_VERSION = '5.0.3'; 
+const APP_VERSION = '5.0.4'; 
 const API_BASE_URL = 'https://prod.interlinklabs.ai/api/v1';
 const MINI_API_URL = 'https://interlink-mini-app.interlinklabs.ai/api';
 const ACCOUNTS_JSON = path.join(__dirname, 'accounts.json');

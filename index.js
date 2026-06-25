@@ -13,7 +13,7 @@ const LOGS_JSON = path.join(__dirname, 'logs.json');
 const DEVICE_POOL = path.join(__dirname, 'devicepool.txt');
 const API_BASE = 'https://prod.interlinklabs.ai/api/v1';
 const WINDOWS = [0, 4, 8, 12, 16, 20];
-const APP_VERSION = '5.0.3'; 
+const APP_VERSION = '5.0.4'; 
 
 // Advanced 256-Color Palette
 const c = {
